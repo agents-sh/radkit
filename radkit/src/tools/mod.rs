@@ -39,6 +39,7 @@ mod execution_state;
 pub mod function_tool;
 #[cfg(all(feature = "mcp", not(all(target_os = "wasi", target_env = "p1"))))]
 pub mod mcp;
+pub mod memory;
 #[cfg(feature = "openapi")]
 pub mod openapi;
 pub mod tool;

@@ -1,153 +1,147 @@
-//! Memory storage service for agent data.
+//! Long-term semantic memory service for agents.
 //!
-//! This module provides key-value storage functionality for agents to persist data.
-//! The [`MemoryService`] trait defines the core interface for storage operations,
-//! and [`MemoryServiceExt`] provides convenient typed access methods.
+//! This module provides semantic search over past conversations, user facts, and documents.
+//! Unlike the short-term context handled by `TaskManager`, the `MemoryService` persists
+//! across sessions and enables semantic (meaning-based) retrieval.
+//!
+//! # Overview
+//!
+//! - [`MemoryService`]: Core trait for semantic memory operations
+//! - [`OwnedHistory`]: Facade for accessing past conversations and user facts
+//! - [`OwnedKnowledge`]: Facade for accessing documents and external sources
+//! - [`Embedder`]: Trait for generating text embeddings (required by vector backends)
+//!
+//! # Architecture
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────┐
+//! │                     CONCEPTUAL LAYER                         │
+//! │  ┌─────────────────┐       ┌─────────────────┐              │
+//! │  │ OwnedHistory    │       │ OwnedKnowledge  │              │
+//! │  │ recall()        │       │ search()        │              │
+//! │  │ save_fact()     │       │                 │              │
+//! │  └────────┬────────┘       └────────┬────────┘              │
+//! │           └──────────┬──────────────┘                       │
+//! │                      ▼                                       │
+//! │              ┌───────────────┐                               │
+//! │              │ MemoryService │  Core trait                   │
+//! │              └───────┬───────┘                               │
+//! │                      │                                       │
+//! │  ┌───────────────────┼───────────────────┐                   │
+//! │  ▼                   ▼                   ▼                   │
+//! │ InMemory           Qdrant            Custom                  │
+//! │ (keyword)         (vector)          backends                 │
+//! └─────────────────────────────────────────────────────────────┘
+//! ```
 //!
 //! # Multi-tenancy
 //!
-//! All memory operations are namespaced by [`AuthContext`](crate::runtime::context::AuthContext),
-//! ensuring that different users and applications cannot access each other's data.
+//! All operations are namespaced by [`AuthContext`](crate::runtime::context::AuthContext),
+//! ensuring data isolation between users and applications.
 //!
 //! # Examples
 //!
 //! ```ignore
-//! use radkit::runtime::memory::{MemoryService, MemoryServiceExt, InMemoryMemoryService};
+//! use radkit::runtime::memory::{MemoryService, InMemoryMemoryService, SearchOptions};
 //! use radkit::runtime::context::AuthContext;
-//! use serde::{Serialize, Deserialize};
-//!
-//! #[derive(Serialize, Deserialize)]
-//! struct UserData {
-//!     name: String,
-//!     score: i32,
-//! }
 //!
 //! let memory = InMemoryMemoryService::new();
-//! let auth_ctx = AuthContext {
+//! let auth = AuthContext {
 //!     app_name: "my-app".to_string(),
 //!     user_name: "alice".to_string(),
 //! };
 //!
-//! // Save typed data
-//! let data = UserData { name: "Alice".to_string(), score: 100 };
-//! memory.save(&auth_ctx, "user_data", &data).await?;
-//!
-//! // Load typed data
-//! let loaded: Option<UserData> = memory.load(&auth_ctx, "user_data").await?;
+//! // Search past conversations
+//! let results = memory.search(&auth, "dark mode preferences", SearchOptions::history_only()).await?;
 //! ```
 
-pub mod in_memory;
+pub mod backends;
+mod embedder;
+mod extensions;
+mod facades;
+mod types;
 
-pub use in_memory::InMemoryMemoryService;
-
-use serde::{de::DeserializeOwned, Serialize};
-
-use crate::{
-    compat::{MaybeSend, MaybeSync},
-    errors::AgentResult,
-    runtime::context::AuthContext,
+pub use backends::InMemoryMemoryService;
+pub use embedder::Embedder;
+pub use extensions::{
+    chunk_text, CompletedConversation, CompletedMessage, Document, MemoryServiceConversationExt,
+    MemoryServiceDocumentExt,
+};
+pub use facades::{OwnedHistory, OwnedKnowledge};
+pub use types::{
+    ContentSource, MemoryContent, MemoryEntry, SearchOptions, SourceCategory, SourceType,
 };
 
-/// Service for persistent key-value storage.
+use crate::compat::{MaybeSend, MaybeSync};
+use crate::errors::AgentResult;
+use crate::runtime::context::AuthContext;
+
+/// Long-term semantic memory store.
 ///
-/// Memory service provides storage and retrieval of JSON-serialized values.
-/// Use [`MemoryServiceExt`] for convenient typed access.
+/// Provides semantic search over past conversations, user facts, and documents.
+/// For current conversation context, use `TaskManager` instead.
 ///
 /// # Multi-tenancy
 ///
 /// All operations are namespaced by the [`AuthContext`], ensuring data isolation
 /// between different users and applications.
-#[cfg_attr(all(target_os = "wasi", target_env = "p1"), async_trait::async_trait(?Send))]
+///
+/// # Implementations
+///
+/// - [`InMemoryMemoryService`]: Development backend using keyword matching (no embeddings)
+/// - `QdrantMemoryService`: Production backend using vector search (requires `memory-qdrant` feature)
+#[cfg_attr(
+    all(target_os = "wasi", target_env = "p1"),
+    async_trait::async_trait(?Send)
+)]
 #[cfg_attr(
     not(all(target_os = "wasi", target_env = "p1")),
     async_trait::async_trait
 )]
 pub trait MemoryService: MaybeSend + MaybeSync {
-    /// Stores a JSON value under the given key, namespaced by the auth context.
+    /// Add content to memory.
     ///
-    /// If a value already exists for the key, it will be replaced.
-    ///
-    /// # Arguments
-    ///
-    /// * `auth_ctx` - The authentication context for namespacing.
-    /// * `key` - Storage key.
-    /// * `value` - JSON value to store.
-    ///
-    /// # Errors
-    ///
-    /// May return [`crate::errors::AgentError::Internal`] if storage fails.
-    async fn save_serialized(
-        &self,
-        auth_ctx: &AuthContext,
-        key: &str,
-        value: serde_json::Value,
-    ) -> AgentResult<()>;
-
-    /// Loads a JSON value for the given key, namespaced by the auth context.
-    ///
-    /// Returns `Ok(None)` if the key doesn't exist.
+    /// Returns the assigned ID. Uses upsert semantics - if content with the
+    /// same ID already exists, it will be replaced.
     ///
     /// # Arguments
     ///
-    /// * `auth_ctx` - The authentication context for namespacing.
-    /// * `key` - Storage key.
+    /// * `auth_ctx` - Authentication context for namespacing
+    /// * `content` - Content to add to memory
+    async fn add(&self, auth_ctx: &AuthContext, content: MemoryContent) -> AgentResult<String>;
+
+    /// Add multiple contents in batch.
     ///
-    /// # Errors
-    ///
-    /// May return [`crate::errors::AgentError::Internal`] if loading fails.
-    async fn load_serialized(
+    /// More efficient than calling `add` repeatedly.
+    /// Returns the assigned IDs in the same order as input.
+    async fn add_batch(
         &self,
         auth_ctx: &AuthContext,
-        key: &str,
-    ) -> AgentResult<Option<serde_json::Value>>;
-}
+        contents: Vec<MemoryContent>,
+    ) -> AgentResult<Vec<String>>;
 
-/// Extension trait providing typed access to [`MemoryService`].
-///
-/// This trait is automatically implemented for all types that implement
-/// [`MemoryService`]. It provides convenient methods for storing and
-/// retrieving typed values without manual JSON handling.
-#[cfg_attr(all(target_os = "wasi", target_env = "p1"), async_trait::async_trait(?Send))]
-#[cfg_attr(
-    not(all(target_os = "wasi", target_env = "p1")),
-    async_trait::async_trait
-)]
-pub trait MemoryServiceExt {
-    /// Stores a typed value under the given key.
-    async fn save<T>(&self, auth_ctx: &AuthContext, key: &str, value: &T) -> AgentResult<()>
-    where
-        T: Serialize + MaybeSend + MaybeSync;
+    /// Search memory for relevant content.
+    ///
+    /// Returns entries ordered by relevance score (highest first).
+    ///
+    /// # Empty Query Behavior
+    ///
+    /// - **InMemory backend**: Returns all entries (filtered by source_type) with score 1.0
+    /// - **Vector backends**: Behavior depends on the embedding model
+    async fn search(
+        &self,
+        auth_ctx: &AuthContext,
+        query: &str,
+        options: SearchOptions,
+    ) -> AgentResult<Vec<MemoryEntry>>;
 
-    /// Loads a typed value for the given key.
-    async fn load<T>(&self, auth_ctx: &AuthContext, key: &str) -> AgentResult<Option<T>>
-    where
-        T: DeserializeOwned + MaybeSend;
-}
+    /// Delete a specific entry by ID.
+    ///
+    /// Returns `true` if the entry existed and was deleted.
+    async fn delete(&self, auth_ctx: &AuthContext, id: &str) -> AgentResult<bool>;
 
-#[cfg_attr(all(target_os = "wasi", target_env = "p1"), async_trait::async_trait(?Send))]
-#[cfg_attr(
-    not(all(target_os = "wasi", target_env = "p1")),
-    async_trait::async_trait
-)]
-impl<M> MemoryServiceExt for M
-where
-    M: MemoryService + MaybeSync + ?Sized,
-{
-    async fn save<T>(&self, auth_ctx: &AuthContext, key: &str, value: &T) -> AgentResult<()>
-    where
-        T: Serialize + MaybeSend + MaybeSync,
-    {
-        let json = serde_json::to_value(value)?;
-        self.save_serialized(auth_ctx, key, json).await
-    }
-
-    async fn load<T>(&self, auth_ctx: &AuthContext, key: &str) -> AgentResult<Option<T>>
-    where
-        T: DeserializeOwned + MaybeSend,
-    {
-        self.load_serialized(auth_ctx, key)
-            .await?
-            .map(|value| serde_json::from_value(value).map_err(Into::into))
-            .transpose()
-    }
+    /// Delete multiple entries by IDs.
+    ///
+    /// Returns the number of entries that were deleted.
+    async fn delete_batch(&self, auth_ctx: &AuthContext, ids: &[String]) -> AgentResult<usize>;
 }

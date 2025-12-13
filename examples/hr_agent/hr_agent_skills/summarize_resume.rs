@@ -164,7 +164,7 @@ impl SkillHandler for SummarizeResumeSkill {
         &self,
         state: &mut State,
         progress: &ProgressSender,
-        runtime: &dyn AgentRuntime,
+        _runtime: &dyn AgentRuntime,
         content: Content,
     ) -> Result<OnRequestResult, AgentError> {
         // Send intermediate status update

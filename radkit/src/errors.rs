@@ -159,6 +159,11 @@ pub enum AgentError {
     // === Context Errors ===
     #[error("Context error: {0}")]
     ContextError(String),
+
+    // === Memory Service Errors ===
+    /// Memory service errors (embedding failures, backend errors, etc.)
+    #[error("Memory error: {0}")]
+    Memory(String),
 }
 
 /// Convenience type alias

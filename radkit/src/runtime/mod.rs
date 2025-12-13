@@ -23,7 +23,7 @@ mod banner;
 // Re-export service traits for convenience
 pub use auth::AuthService;
 pub use logging::{LogLevel, LoggingService};
-pub use memory::{MemoryService, MemoryServiceExt};
+pub use memory::MemoryService;
 pub use task_manager::{
     DefaultTaskManager, ListTasksFilter, PaginatedResult, Task, TaskEvent, TaskManager, TaskStore,
 };
@@ -94,6 +94,49 @@ pub trait AgentRuntime: MaybeSend + MaybeSync {
     /// Returns the default LLM for this runtime.
     #[cfg(feature = "runtime")]
     fn default_llm(&self) -> Arc<dyn BaseLlm>;
+
+    /// Returns a History facade for searching past conversations and user facts.
+    ///
+    /// This is a convenience method that wraps the memory service with
+    /// pre-configured filtering for history-related content.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let history = runtime.history();
+    /// let memories = history.recall(&auth, "user preferences", 5).await?;
+    /// ```
+    fn history(&self) -> memory::OwnedHistory {
+        memory::OwnedHistory::new(self.memory())
+    }
+
+    /// Returns a Knowledge facade for searching documents and external sources.
+    ///
+    /// This is a convenience method that wraps the memory service with
+    /// pre-configured filtering for knowledge-related content.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let knowledge = runtime.knowledge();
+    /// let results = knowledge.search(&auth, "vacation policy", 5).await?;
+    /// ```
+    fn knowledge(&self) -> memory::OwnedKnowledge {
+        memory::OwnedKnowledge::new(self.memory())
+    }
+
+    /// Returns a pre-configured MemoryToolset for agent use.
+    ///
+    /// The toolset provides these tools:
+    /// - `load_memory`: Search past conversations and user facts
+    /// - `save_memory`: Store user facts and preferences
+    /// - `search_knowledge`: Search documents and external sources
+    ///
+    /// The toolset is pre-configured with the current user's auth context.
+    #[cfg(feature = "runtime")]
+    fn memory_tools(&self) -> crate::tools::memory::MemoryToolset {
+        crate::tools::memory::MemoryToolset::new(self.memory(), self.current_user())
+    }
 }
 
 /// Default runtime implementation for native targets.

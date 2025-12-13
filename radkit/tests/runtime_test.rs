@@ -5,9 +5,11 @@
 
 use radkit::agent::Agent;
 use radkit::runtime::context::AuthContext;
-use radkit::runtime::task_manager::{DefaultTaskManager, InMemoryTaskStore};
-use radkit::runtime::{AgentRuntime, ListTasksFilter, LogLevel, MemoryServiceExt, Runtime};
+use radkit::runtime::memory::{ContentSource, MemoryContent, SearchOptions};
+use radkit::runtime::task_manager::InMemoryTaskStore;
+use radkit::runtime::{AgentRuntime, ListTasksFilter, LogLevel, Runtime};
 use radkit::test_support::FakeLlm;
+use std::collections::HashMap;
 
 fn test_agent() -> radkit::agent::AgentDefinition {
     Agent::builder().with_name("Test Agent").build()
@@ -192,7 +194,7 @@ async fn test_task_manager_list_tasks() {
 }
 
 #[tokio::test]
-async fn test_memory_service_save_and_load() {
+async fn test_memory_service_add_and_search() {
     let llm = FakeLlm::with_responses("fake_llm", std::iter::empty());
     let runtime = Runtime::builder(test_agent(), llm).build();
 
@@ -200,23 +202,30 @@ async fn test_memory_service_save_and_load() {
     let auth_context = auth.get_auth_context();
     let memory = runtime.memory();
 
-    // Save a value
-    let key = "test_key";
-    let value = serde_json::json!({"name": "Alice", "age": 30});
+    // Add a user fact
+    let content = MemoryContent {
+        text: "User Alice prefers dark mode theme".to_string(),
+        source: ContentSource::UserFact {
+            category: Some("preferences".to_string()),
+        },
+        metadata: HashMap::new(),
+    };
 
-    memory
-        .save(&auth_context, key, &value)
+    let id = memory
+        .add(&auth_context, content)
         .await
-        .expect("save value");
+        .expect("add memory");
 
-    // Retrieve the value
-    let retrieved: serde_json::Value = memory
-        .load(&auth_context, key)
+    assert!(id.starts_with("fact:preferences:"));
+
+    // Search for the fact
+    let results = memory
+        .search(&auth_context, "dark mode", SearchOptions::history_only())
         .await
-        .expect("load value")
-        .expect("value should exist");
+        .expect("search memory");
 
-    assert_eq!(retrieved, value);
+    assert_eq!(results.len(), 1);
+    assert!(results[0].text.contains("dark mode"));
 }
 
 #[tokio::test]
@@ -237,35 +246,47 @@ async fn test_memory_service_auth_scoping() {
         user_name: "user2".to_string(),
     };
 
-    // Save value for auth_context_1
-    let value1 = serde_json::json!({"data": "context1"});
+    // Add fact for auth_context_1
     memory
-        .save(&auth_context_1, "shared_key", &value1)
+        .add(
+            &auth_context_1,
+            MemoryContent {
+                text: "User1 secret information".to_string(),
+                source: ContentSource::UserFact { category: None },
+                metadata: HashMap::new(),
+            },
+        )
         .await
-        .expect("save value for auth1");
+        .expect("add for auth1");
 
-    // Save value for auth_context_2
-    let value2 = serde_json::json!({"data": "context2"});
+    // Add fact for auth_context_2
     memory
-        .save(&auth_context_2, "shared_key", &value2)
+        .add(
+            &auth_context_2,
+            MemoryContent {
+                text: "User2 secret information".to_string(),
+                source: ContentSource::UserFact { category: None },
+                metadata: HashMap::new(),
+            },
+        )
         .await
-        .expect("save value for auth2");
+        .expect("add for auth2");
 
-    // Verify auth_context_1 sees its own value
-    let retrieved1: serde_json::Value = memory
-        .load(&auth_context_1, "shared_key")
+    // Verify auth_context_1 only sees its own data
+    let results1 = memory
+        .search(&auth_context_1, "secret", SearchOptions::default())
         .await
-        .expect("load value")
-        .expect("value should exist");
-    assert_eq!(retrieved1["data"], "context1");
+        .expect("search auth1");
+    assert_eq!(results1.len(), 1);
+    assert!(results1[0].text.contains("User1"));
 
-    // Verify auth_context_2 sees its own value
-    let retrieved2: serde_json::Value = memory
-        .load(&auth_context_2, "shared_key")
+    // Verify auth_context_2 only sees its own data
+    let results2 = memory
+        .search(&auth_context_2, "secret", SearchOptions::default())
         .await
-        .expect("load value")
-        .expect("value should exist");
-    assert_eq!(retrieved2["data"], "context2");
+        .expect("search auth2");
+    assert_eq!(results2.len(), 1);
+    assert!(results2[0].text.contains("User2"));
 }
 
 #[tokio::test]
@@ -295,13 +316,19 @@ async fn test_runtime_services_together() {
     // Use logging
     runtime.logging().log(LogLevel::Info, "Starting workflow");
 
-    // Use memory to store workflow state
-    let workflow_state = serde_json::json!({"step": 1, "data": "processing"});
-    runtime
+    // Use memory to store workflow state as a user fact
+    let workflow_content = MemoryContent {
+        text: "Workflow step 1: processing data".to_string(),
+        source: ContentSource::UserFact {
+            category: Some("workflow".to_string()),
+        },
+        metadata: HashMap::new(),
+    };
+    let _workflow_id = runtime
         .memory()
-        .save(&auth_context, "workflow_state", &workflow_state)
+        .add(&auth_context, workflow_content)
         .await
-        .expect("save state");
+        .expect("save workflow state");
 
     // Create a task
     use a2a_types::{TaskState, TaskStatus};
@@ -323,15 +350,19 @@ async fn test_runtime_services_together() {
         .await
         .expect("save task");
 
-    // Retrieve workflow state
-    let retrieved_state: serde_json::Value = runtime
+    // Retrieve workflow state via search
+    let workflow_results = runtime
         .memory()
-        .load(&auth_context, "workflow_state")
+        .search(
+            &auth_context,
+            "workflow processing",
+            SearchOptions::default(),
+        )
         .await
-        .expect("load state")
-        .expect("state should exist");
+        .expect("search workflow state");
 
-    assert_eq!(retrieved_state["step"], 1);
+    assert!(!workflow_results.is_empty(), "Should find workflow state");
+    assert!(workflow_results[0].text.contains("processing"));
 
     // Retrieve task
     let retrieved_task = task_manager

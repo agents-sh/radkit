@@ -594,7 +594,7 @@ impl ProgressSender {
 ///     user_name: "alice".to_string(),
 /// };
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AuthContext {
     /// The name of the application or agent.
     pub app_name: String,
