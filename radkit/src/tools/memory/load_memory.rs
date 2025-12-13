@@ -12,31 +12,17 @@ use crate::tools::{BaseTool, FunctionDeclaration, ToolContext, ToolResult};
 ///
 /// This tool allows agents to recall what was discussed in previous sessions
 /// or retrieve user preferences.
-///
-/// # Auth Context
-///
-/// Uses auth context in this order of priority:
-/// 1. Auth context captured at construction (via `with_auth`)
-/// 2. Auth context from execution state (`"auth_context"` key)
 pub struct LoadMemoryTool {
     memory_service: Arc<dyn MemoryService>,
-    auth_context: Option<AuthContext>,
+    auth_context: AuthContext,
 }
 
 impl LoadMemoryTool {
-    /// Creates a new load memory tool.
-    pub fn new(memory_service: Arc<dyn MemoryService>) -> Self {
+    /// Creates a new load memory tool with the given memory service and auth context.
+    pub fn new(memory_service: Arc<dyn MemoryService>, auth_context: AuthContext) -> Self {
         Self {
             memory_service,
-            auth_context: None,
-        }
-    }
-
-    /// Creates a new load memory tool with a captured auth context.
-    pub fn with_auth(memory_service: Arc<dyn MemoryService>, auth_context: AuthContext) -> Self {
-        Self {
-            memory_service,
-            auth_context: Some(auth_context),
+            auth_context,
         }
     }
 }
@@ -85,7 +71,7 @@ impl BaseTool for LoadMemoryTool {
     async fn run_async(
         &self,
         args: HashMap<String, Value>,
-        context: &ToolContext<'_>,
+        _context: &ToolContext<'_>,
     ) -> ToolResult {
         let query = match args.get("query").and_then(|v| v.as_str()) {
             Some(q) => q,
@@ -98,22 +84,13 @@ impl BaseTool for LoadMemoryTool {
             .map(|v| v.min(10) as usize)
             .unwrap_or(5);
 
-        // Prefer captured auth context, fall back to execution state
-        let auth_ctx: AuthContext = if let Some(ref auth) = self.auth_context {
-            auth.clone()
-        } else {
-            match context.state().get_state("auth_context") {
-                Some(v) => match serde_json::from_value(v) {
-                    Ok(auth) => auth,
-                    Err(e) => return ToolResult::error(format!("Invalid auth context: {e}")),
-                },
-                None => return ToolResult::error("No auth context available"),
-            }
-        };
-
         let options = SearchOptions::history_only().with_limit(limit);
 
-        let entries = match self.memory_service.search(&auth_ctx, query, options).await {
+        let entries = match self
+            .memory_service
+            .search(&self.auth_context, query, options)
+            .await
+        {
             Ok(e) => e,
             Err(e) => return ToolResult::error(format!("Memory search failed: {e}")),
         };

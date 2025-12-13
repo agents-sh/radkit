@@ -132,11 +132,10 @@ pub trait AgentRuntime: MaybeSend + MaybeSync {
     /// - `save_memory`: Store user facts and preferences
     /// - `search_knowledge`: Search documents and external sources
     ///
-    /// The toolset is pre-configured with the current user's auth context,
-    /// so it works out-of-the-box without manual execution state wiring.
+    /// The toolset is pre-configured with the current user's auth context.
     #[cfg(feature = "runtime")]
     fn memory_tools(&self) -> crate::tools::memory::MemoryToolset {
-        crate::tools::memory::MemoryToolset::with_auth(self.memory(), self.current_user())
+        crate::tools::memory::MemoryToolset::new(self.memory(), self.current_user())
     }
 }
 

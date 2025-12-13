@@ -19,20 +19,10 @@
 //! let memory_service = Arc::new(InMemoryMemoryService::new());
 //! let auth = AuthContext::new("my-app", "user123");
 //!
-//! // Recommended: Create toolset with captured auth context
-//! let toolset = MemoryToolset::with_auth(memory_service, auth);
+//! let toolset = MemoryToolset::new(memory_service, auth);
 //!
 //! // Add toolset to agent...
 //! ```
-//!
-//! # Auth Context
-//!
-//! These tools use auth context in this order of priority:
-//! 1. Auth context captured at construction (via `with_auth`) - **recommended**
-//! 2. Auth context from execution state (`"auth_context"` key)
-//!
-//! Using `with_auth` is the recommended pattern as it ensures the tools work
-//! out-of-the-box without requiring manual wiring of execution state.
 
 mod load_memory;
 mod save_memory;
@@ -53,11 +43,6 @@ use std::sync::Arc;
 /// - `load_memory`: Search past conversations and user facts
 /// - `save_memory`: Store user facts and preferences
 /// - `search_knowledge`: Search documents and external sources
-///
-/// # Auth Context
-///
-/// Prefer using [`with_auth`](Self::with_auth) to create toolsets with a captured
-/// auth context. This ensures tools work without manual execution state wiring.
 pub struct MemoryToolset {
     load_memory: LoadMemoryTool,
     save_memory: SaveMemoryTool,
@@ -65,34 +50,15 @@ pub struct MemoryToolset {
 }
 
 impl MemoryToolset {
-    /// Creates a new memory toolset with the given memory service.
+    /// Creates a new memory toolset with the given memory service and auth context.
     ///
-    /// Tools created this way will look for `"auth_context"` in execution state.
-    /// Consider using [`with_auth`](Self::with_auth) instead.
-    pub fn new(memory_service: Arc<dyn MemoryService>) -> Self {
+    /// The auth context is captured at construction time and used for all tool
+    /// invocations.
+    pub fn new(memory_service: Arc<dyn MemoryService>, auth_context: AuthContext) -> Self {
         Self {
-            load_memory: LoadMemoryTool::new(Arc::clone(&memory_service)),
-            save_memory: SaveMemoryTool::new(Arc::clone(&memory_service)),
-            search_knowledge: SearchKnowledgeTool::new(memory_service),
-        }
-    }
-
-    /// Creates a new memory toolset with a captured auth context.
-    ///
-    /// This is the recommended constructor. The auth context is captured at
-    /// construction time and used for all tool invocations, ensuring the
-    /// tools work out-of-the-box without manual execution state wiring.
-    pub fn with_auth(memory_service: Arc<dyn MemoryService>, auth_context: AuthContext) -> Self {
-        Self {
-            load_memory: LoadMemoryTool::with_auth(
-                Arc::clone(&memory_service),
-                auth_context.clone(),
-            ),
-            save_memory: SaveMemoryTool::with_auth(
-                Arc::clone(&memory_service),
-                auth_context.clone(),
-            ),
-            search_knowledge: SearchKnowledgeTool::with_auth(memory_service, auth_context),
+            load_memory: LoadMemoryTool::new(Arc::clone(&memory_service), auth_context.clone()),
+            save_memory: SaveMemoryTool::new(Arc::clone(&memory_service), auth_context.clone()),
+            search_knowledge: SearchKnowledgeTool::new(memory_service, auth_context),
         }
     }
 }

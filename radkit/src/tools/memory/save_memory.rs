@@ -14,31 +14,17 @@ const MAX_CONTENT_LENGTH: usize = 4000;
 ///
 /// This tool allows agents to remember user preferences, facts, or insights
 /// that should be recalled in future conversations.
-///
-/// # Auth Context
-///
-/// Uses auth context in this order of priority:
-/// 1. Auth context captured at construction (via `with_auth`)
-/// 2. Auth context from execution state (`"auth_context"` key)
 pub struct SaveMemoryTool {
     memory_service: Arc<dyn MemoryService>,
-    auth_context: Option<AuthContext>,
+    auth_context: AuthContext,
 }
 
 impl SaveMemoryTool {
-    /// Creates a new save memory tool.
-    pub fn new(memory_service: Arc<dyn MemoryService>) -> Self {
+    /// Creates a new save memory tool with the given memory service and auth context.
+    pub fn new(memory_service: Arc<dyn MemoryService>, auth_context: AuthContext) -> Self {
         Self {
             memory_service,
-            auth_context: None,
-        }
-    }
-
-    /// Creates a new save memory tool with a captured auth context.
-    pub fn with_auth(memory_service: Arc<dyn MemoryService>, auth_context: AuthContext) -> Self {
-        Self {
-            memory_service,
-            auth_context: Some(auth_context),
+            auth_context,
         }
     }
 }
@@ -86,7 +72,7 @@ impl BaseTool for SaveMemoryTool {
     async fn run_async(
         &self,
         args: HashMap<String, Value>,
-        context: &ToolContext<'_>,
+        _context: &ToolContext<'_>,
     ) -> ToolResult {
         let text_content = match args.get("content").and_then(|v| v.as_str()) {
             Some(c) => c.to_string(),
@@ -104,19 +90,6 @@ impl BaseTool for SaveMemoryTool {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        // Prefer captured auth context, fall back to execution state
-        let auth_ctx: AuthContext = if let Some(ref auth) = self.auth_context {
-            auth.clone()
-        } else {
-            match context.state().get_state("auth_context") {
-                Some(v) => match serde_json::from_value(v) {
-                    Ok(auth) => auth,
-                    Err(e) => return ToolResult::error(format!("Invalid auth context: {e}")),
-                },
-                None => return ToolResult::error("No auth context available"),
-            }
-        };
-
         let memory_content = MemoryContent {
             text: text_content,
             source: ContentSource::UserFact {
@@ -125,7 +98,11 @@ impl BaseTool for SaveMemoryTool {
             metadata: HashMap::new(),
         };
 
-        let id = match self.memory_service.add(&auth_ctx, memory_content).await {
+        let id = match self
+            .memory_service
+            .add(&self.auth_context, memory_content)
+            .await
+        {
             Ok(id) => id,
             Err(e) => return ToolResult::error(format!("Failed to save: {e}")),
         };

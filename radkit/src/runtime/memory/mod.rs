@@ -7,8 +7,8 @@
 //! # Overview
 //!
 //! - [`MemoryService`]: Core trait for semantic memory operations
-//! - [`History`]: Facade for accessing past conversations and user facts
-//! - [`Knowledge`]: Facade for accessing documents and external sources
+//! - [`OwnedHistory`]: Facade for accessing past conversations and user facts
+//! - [`OwnedKnowledge`]: Facade for accessing documents and external sources
 //! - [`Embedder`]: Trait for generating text embeddings (required by vector backends)
 //!
 //! # Architecture
@@ -17,7 +17,7 @@
 //! ┌─────────────────────────────────────────────────────────────┐
 //! │                     CONCEPTUAL LAYER                         │
 //! │  ┌─────────────────┐       ┌─────────────────┐              │
-//! │  │ History facade  │       │ Knowledge facade│              │
+//! │  │ OwnedHistory    │       │ OwnedKnowledge  │              │
 //! │  │ recall()        │       │ search()        │              │
 //! │  │ save_fact()     │       │                 │              │
 //! │  └────────┬────────┘       └────────┬────────┘              │
@@ -67,7 +67,7 @@ pub use extensions::{
     chunk_text, CompletedConversation, CompletedMessage, Document, MemoryServiceConversationExt,
     MemoryServiceDocumentExt,
 };
-pub use facades::{History, Knowledge, OwnedHistory, OwnedKnowledge};
+pub use facades::{OwnedHistory, OwnedKnowledge};
 pub use types::{
     ContentSource, MemoryContent, MemoryEntry, SearchOptions, SourceCategory, SourceType,
 };
