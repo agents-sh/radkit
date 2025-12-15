@@ -130,6 +130,7 @@ pub mod macros {
     ///
     /// ```ignore
     /// use radkit::macros::LLMOutput;
+    /// use radkit::tryparse;
     /// use schemars::JsonSchema;
     /// use serde::Deserialize;
     ///
@@ -149,3 +150,33 @@ pub mod macros {
 }
 
 pub use crate::compat::{MaybeSend, MaybeSync};
+
+// Re-export tryparse for derive macro path resolution.
+// This allows external crates to use `radkit::tryparse` instead of adding
+// tryparse as a direct dependency. The tryparse-derive macro uses
+// proc-macro-crate to find this re-export.
+#[doc(hidden)]
+pub use tryparse as __private_tryparse;
+
+/// Re-exported tryparse crate for parsing LLM outputs.
+///
+/// This module re-exports the `tryparse` crate, allowing users of radkit
+/// to parse LLM outputs without adding `tryparse` as a direct dependency.
+///
+/// # Example
+///
+/// ```ignore
+/// use radkit::macros::LLMOutput;
+/// use radkit::tryparse;
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize, LLMOutput)]
+/// struct UserData {
+///     name: String,
+///     age: u32,
+/// }
+///
+/// // Parse LLM output with fuzzy matching
+/// let data: UserData = tryparse::parse_llm(llm_response)?;
+/// ```
+pub use tryparse;

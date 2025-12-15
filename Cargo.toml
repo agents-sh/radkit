@@ -3,8 +3,8 @@ members = ["a2a-types", "a2a-client", "radkit", "radkit-macros"]
 resolver = "2"
 
 [workspace.dependencies]
-tryparse = { version = "0.4.2", default-features = false, features = ["derive"] }
-tryparse-derive = "0.4.2"
+tryparse = { version = "0.4.3", default-features = false, features = ["derive"] }
+tryparse-derive = "0.4.3"
 
 [profile.wasm-release]
 inherits = "release"
