@@ -36,15 +36,20 @@ impl DefaultTaskManager {
 
     fn event_key(event: &TaskEvent) -> String {
         match event {
-            TaskEvent::Message(msg) => msg.task_id.as_ref().map_or_else(
-                || {
+            TaskEvent::Message(msg) => {
+                if msg.task_id.is_empty() {
                     format!(
                         "{NEGOTIATION_PREFIX}{}",
-                        msg.context_id.as_deref().unwrap_or("default")
+                        if msg.context_id.is_empty() {
+                            "default"
+                        } else {
+                            &msg.context_id
+                        }
                     )
-                },
-                std::clone::Clone::clone,
-            ),
+                } else {
+                    msg.task_id.clone()
+                }
+            }
             TaskEvent::StatusUpdate(update) => update.task_id.clone(),
             TaskEvent::ArtifactUpdate(update) => update.task_id.clone(),
         }
@@ -125,7 +130,7 @@ impl TaskManager for DefaultTaskManager {
         let mut messages = Vec::new();
         for event in self.store.get_events(auth_ctx, &negotiation_key).await? {
             if let TaskEvent::Message(msg) = event {
-                if msg.context_id.as_deref() == Some(context_id) && msg.task_id.is_none() {
+                if msg.context_id == context_id && msg.task_id.is_empty() {
                     messages.push(msg);
                 }
             }

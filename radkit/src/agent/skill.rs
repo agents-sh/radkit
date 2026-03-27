@@ -467,7 +467,9 @@ mod tests {
 
         let data_part = match &parts[0] {
             ContentPart::Data(data) => data,
-            other => panic!("expected data part, found {other:?}"),
+            other @ ContentPart::Text(_)
+            | other @ ContentPart::ToolCall(_)
+            | other @ ContentPart::ToolResponse(_) => panic!("expected data part, found {other:?}"),
         };
 
         assert_eq!(data_part.content_type, "application/json");
@@ -475,7 +477,7 @@ mod tests {
 
         let encoded = match &data_part.source {
             DataSource::Base64(b64) => b64,
-            other => panic!("expected base64 data, found {other:?}"),
+            other @ DataSource::Uri(_) => panic!("expected base64 data, found {other:?}"),
         };
 
         let decoded = base64::engine::general_purpose::STANDARD
@@ -492,13 +494,15 @@ mod tests {
 
         let data_part = match &artifact.content().parts()[0] {
             ContentPart::Data(data) => data,
-            other => panic!("expected data part, found {other:?}"),
+            other @ ContentPart::Text(_)
+            | other @ ContentPart::ToolCall(_)
+            | other @ ContentPart::ToolResponse(_) => panic!("expected data part, found {other:?}"),
         };
 
         assert_eq!(data_part.content_type, "image/png");
         let encoded = match &data_part.source {
             DataSource::Base64(b64) => b64,
-            other => panic!("expected base64 data, found {other:?}"),
+            other @ DataSource::Uri(_) => panic!("expected base64 data, found {other:?}"),
         };
 
         let decoded = base64::engine::general_purpose::STANDARD

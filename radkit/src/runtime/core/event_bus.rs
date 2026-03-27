@@ -120,7 +120,13 @@ fn extract_task_id(event: &TaskEvent) -> Option<TaskId> {
     match event {
         TaskEvent::StatusUpdate(update) => Some(update.task_id.clone()),
         TaskEvent::ArtifactUpdate(update) => Some(update.task_id.clone()),
-        TaskEvent::Message(message) => message.task_id.clone(),
+        TaskEvent::Message(message) => {
+            if message.task_id.is_empty() {
+                None
+            } else {
+                Some(message.task_id.clone())
+            }
+        }
     }
 }
 
@@ -134,16 +140,15 @@ impl Default for TaskEventBus {
 mod tests {
     use super::*;
     use crate::runtime::task_manager::TaskEvent;
-    use a2a_types::{Message, MessageRole, TaskState, TaskStatus, TaskStatusUpdateEvent};
+    use a2a_types::{Message, TaskState, TaskStatus, TaskStatusUpdateEvent};
 
     fn message_event(task_id: &str) -> TaskEvent {
         TaskEvent::Message(Message {
-            kind: "message".into(),
             message_id: "msg".into(),
-            role: MessageRole::Agent,
+            role: a2a_types::Role::Agent as i32,
             parts: Vec::new(),
-            context_id: Some("ctx".into()),
-            task_id: Some(task_id.into()),
+            context_id: "ctx".into(),
+            task_id: task_id.into(),
             reference_task_ids: Vec::new(),
             extensions: Vec::new(),
             metadata: None,
@@ -156,15 +161,13 @@ mod tests {
         let mut rx = bus.subscribe("task-123");
 
         let status = TaskStatusUpdateEvent {
-            kind: a2a_types::STATUS_UPDATE_KIND.to_string(),
             task_id: "task-123".into(),
             context_id: "ctx".into(),
-            status: TaskStatus {
-                state: TaskState::Working,
+            status: Some(TaskStatus {
+                state: TaskState::Working as i32,
                 timestamp: None,
                 message: None,
-            },
-            is_final: false,
+            }),
             metadata: None,
         };
         bus.publish(&TaskEvent::StatusUpdate(status));

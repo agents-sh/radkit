@@ -48,8 +48,8 @@ async fn test_task_manager_save_and_get() {
         id: "test-task-1".to_string(),
         context_id: "test-context-1".to_string(),
         status: TaskStatus {
-            state: TaskState::Working,
-            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            state: TaskState::Working as i32,
+            timestamp: None,
             message: None,
         },
         artifacts: vec![],
@@ -96,8 +96,8 @@ async fn test_task_manager_auth_scoping() {
         id: "task-1".to_string(),
         context_id: "context-1".to_string(),
         status: TaskStatus {
-            state: TaskState::Working,
-            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            state: TaskState::Working as i32,
+            timestamp: None,
             message: None,
         },
         artifacts: vec![],
@@ -113,8 +113,8 @@ async fn test_task_manager_auth_scoping() {
         id: "task-2".to_string(),
         context_id: "context-2".to_string(),
         status: TaskStatus {
-            state: TaskState::Working,
-            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            state: TaskState::Working as i32,
+            timestamp: None,
             message: None,
         },
         artifacts: vec![],
@@ -170,8 +170,8 @@ async fn test_task_manager_list_tasks() {
             id: format!("task-{i}"),
             context_id: format!("context-{i}"),
             status: TaskStatus {
-                state: TaskState::Working,
-                timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                state: TaskState::Working as i32,
+                timestamp: None,
                 message: None,
             },
             artifacts: vec![],
@@ -338,8 +338,8 @@ async fn test_runtime_services_together() {
         id: "workflow-task-1".to_string(),
         context_id: "workflow-context-1".to_string(),
         status: TaskStatus {
-            state: TaskState::Working,
-            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            state: TaskState::Working as i32,
+            timestamp: None,
             message: None,
         },
         artifacts: vec![],
@@ -375,6 +375,320 @@ async fn test_runtime_services_together() {
 
     // Log completion
     runtime.logging().log(LogLevel::Info, "Workflow completed");
+}
+
+#[cfg(all(feature = "runtime", not(all(target_os = "wasi", target_env = "p1"))))]
+mod a2a_v1_runtime_tests {
+    use super::*;
+    use a2a_client::A2AClient;
+    use a2a_types::{self as v1, AgentCard, Message, Part};
+    use futures::StreamExt;
+    use radkit::agent::{
+        OnInputResult, OnRequestResult, RegisteredSkill, SkillHandler, SkillMetadata,
+    };
+    use radkit::errors::{AgentError, AgentResult};
+    use radkit::models::{Content, LlmResponse};
+    use radkit::runtime::context::{ProgressSender, State as SkillState};
+    use std::time::Duration;
+
+    struct ImmediateSkill;
+
+    static IMMEDIATE_METADATA: SkillMetadata = SkillMetadata::new(
+        "immediate-skill",
+        "Immediate Skill",
+        "Completes immediately",
+        &[],
+        &[],
+        &[],
+        &[],
+    );
+
+    #[async_trait::async_trait]
+    impl SkillHandler for ImmediateSkill {
+        async fn on_request(
+            &self,
+            _state: &mut SkillState,
+            _progress: &ProgressSender,
+            _runtime: &dyn AgentRuntime,
+            _content: Content,
+        ) -> Result<OnRequestResult, AgentError> {
+            Ok(OnRequestResult::Completed {
+                message: Some(Content::from_text("Done")),
+                artifacts: Vec::new(),
+            })
+        }
+
+        async fn on_input_received(
+            &self,
+            _state: &mut SkillState,
+            _progress: &ProgressSender,
+            _runtime: &dyn AgentRuntime,
+            _input: Content,
+        ) -> Result<OnInputResult, AgentError> {
+            unreachable!("immediate skill never continues");
+        }
+    }
+
+    impl RegisteredSkill for ImmediateSkill {
+        fn metadata() -> &'static SkillMetadata {
+            &IMMEDIATE_METADATA
+        }
+    }
+
+    fn negotiation_response(skill_id: &str) -> AgentResult<LlmResponse> {
+        FakeLlm::text_response(
+            serde_json::json!({
+                "type": "start_task",
+                "skill_id": skill_id,
+                "reasoning": "selected in test"
+            })
+            .to_string(),
+        )
+    }
+
+    fn test_agent() -> radkit::agent::AgentDefinition {
+        Agent::builder()
+            .with_name("Test Agent")
+            .with_version("1.0.0")
+            .with_skill(ImmediateSkill)
+            .build()
+    }
+
+    fn free_local_address() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let address = listener.local_addr().expect("listener address");
+        drop(listener);
+        address.to_string()
+    }
+
+    async fn wait_for_server(base_url: &str) {
+        let client = reqwest::Client::new();
+        let card_url = format!("{base_url}/.well-known/agent-card.json");
+
+        for _ in 0..50 {
+            let ready = client
+                .get(&card_url)
+                .send()
+                .await
+                .map(|response| response.status().is_success())
+                .unwrap_or(false);
+            if ready {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        panic!("runtime server did not start at {card_url}");
+    }
+
+    fn create_message(text: &str) -> Message {
+        Message {
+            message_id: uuid::Uuid::new_v4().to_string(),
+            context_id: String::new(),
+            task_id: String::new(),
+            role: v1::Role::User.into(),
+            parts: vec![Part {
+                content: Some(v1::part::Content::Text(text.to_string())),
+                metadata: None,
+                filename: String::new(),
+                media_type: "text/plain".to_string(),
+            }],
+            metadata: None,
+            extensions: Vec::new(),
+            reference_task_ids: Vec::new(),
+        }
+    }
+
+    fn http_json_client(base_url: &str) -> A2AClient {
+        A2AClient::from_card(AgentCard {
+            name: "Test Agent".to_string(),
+            description: "desc".to_string(),
+            supported_interfaces: vec![v1::AgentInterface {
+                url: base_url.to_string(),
+                protocol_binding: "HTTP+JSON".to_string(),
+                tenant: String::new(),
+                protocol_version: "1.0".to_string(),
+            }],
+            provider: None,
+            version: "1.0.0".to_string(),
+            documentation_url: None,
+            capabilities: Some(v1::AgentCapabilities {
+                streaming: Some(true),
+                push_notifications: Some(false),
+                extensions: Vec::new(),
+                extended_agent_card: Some(false),
+            }),
+            security_schemes: std::collections::HashMap::new(),
+            security_requirements: Vec::new(),
+            default_input_modes: vec!["text/plain".to_string()],
+            default_output_modes: vec!["text/plain".to_string()],
+            skills: Vec::new(),
+            signatures: Vec::new(),
+            icon_url: None,
+        })
+        .expect("http client")
+    }
+
+    fn rpc_client(base_url: &str) -> A2AClient {
+        A2AClient::from_card(AgentCard {
+            name: "Test Agent".to_string(),
+            description: "desc".to_string(),
+            supported_interfaces: vec![v1::AgentInterface {
+                url: format!("{base_url}/rpc"),
+                protocol_binding: "JSONRPC".to_string(),
+                tenant: String::new(),
+                protocol_version: "1.0".to_string(),
+            }],
+            provider: None,
+            version: "1.0.0".to_string(),
+            documentation_url: None,
+            capabilities: Some(v1::AgentCapabilities {
+                streaming: Some(true),
+                push_notifications: Some(false),
+                extensions: Vec::new(),
+                extended_agent_card: Some(false),
+            }),
+            security_schemes: std::collections::HashMap::new(),
+            security_requirements: Vec::new(),
+            default_input_modes: vec!["text/plain".to_string()],
+            default_output_modes: vec!["text/plain".to_string()],
+            skills: Vec::new(),
+            signatures: Vec::new(),
+            icon_url: None,
+        })
+        .expect("rpc client")
+    }
+
+    #[tokio::test]
+    async fn a2a_client_v1_http_json_roundtrip() {
+        let llm =
+            FakeLlm::with_responses("fake-llm", [negotiation_response(IMMEDIATE_METADATA.id)]);
+        let address = free_local_address();
+        let base_url = format!("http://{address}");
+        let runtime = Runtime::builder(test_agent(), llm)
+            .base_url(base_url.clone())
+            .build();
+        let server = tokio::spawn(async move {
+            runtime.serve(address).await.expect("runtime server");
+        });
+
+        wait_for_server(&base_url).await;
+
+        let client = http_json_client(&base_url);
+        let send_response = client
+            .send_message(v1::SendMessageRequest {
+                tenant: String::new(),
+                message: Some(create_message("hello")),
+                configuration: None,
+                metadata: None,
+            })
+            .await
+            .expect("send message");
+
+        let task = match send_response.payload {
+            Some(v1::send_message_response::Payload::Task(task)) => task,
+            other => panic!("expected task payload, got {other:?}"),
+        };
+        assert_eq!(
+            v1::TaskState::try_from(task.status.as_ref().expect("status").state)
+                .expect("task state"),
+            v1::TaskState::Completed
+        );
+
+        let fetched = client
+            .get_task(v1::GetTaskRequest {
+                tenant: String::new(),
+                id: task.id.clone(),
+                history_length: Some(5),
+            })
+            .await
+            .expect("get task");
+        assert_eq!(fetched.id, task.id);
+
+        let listed = client
+            .list_tasks(v1::ListTasksRequest {
+                tenant: String::new(),
+                context_id: task.context_id.clone(),
+                status: v1::TaskState::Unspecified.into(),
+                page_size: Some(10),
+                page_token: String::new(),
+                history_length: Some(5),
+                status_timestamp_after: None,
+                include_artifacts: Some(true),
+            })
+            .await
+            .expect("list tasks");
+        assert!(listed
+            .tasks
+            .iter()
+            .any(|listed_task| listed_task.id == task.id));
+
+        let card = client
+            .get_extended_agent_card(v1::GetExtendedAgentCardRequest {
+                tenant: String::new(),
+            })
+            .await
+            .expect("extended card");
+        assert_eq!(card.name, "Test Agent");
+
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn a2a_client_v1_jsonrpc_stream_roundtrip() {
+        let llm =
+            FakeLlm::with_responses("fake-llm", [negotiation_response(IMMEDIATE_METADATA.id)]);
+        let address = free_local_address();
+        let base_url = format!("http://{address}");
+        let runtime = Runtime::builder(test_agent(), llm)
+            .base_url(base_url.clone())
+            .build();
+        let server = tokio::spawn(async move {
+            runtime.serve(address).await.expect("runtime server");
+        });
+
+        wait_for_server(&base_url).await;
+
+        let client = rpc_client(&base_url);
+        let mut stream = client
+            .send_streaming_message(v1::SendMessageRequest {
+                tenant: String::new(),
+                message: Some(create_message("hello")),
+                configuration: None,
+                metadata: None,
+            })
+            .await
+            .expect("stream start");
+
+        let mut last_event = None;
+        while let Some(item) = stream.next().await {
+            let event = item.expect("stream event");
+            last_event = Some(event);
+        }
+
+        let last_event = last_event.expect("final event");
+        match last_event.payload {
+            Some(v1::stream_response::Payload::Task(task)) => {
+                assert_eq!(
+                    v1::TaskState::try_from(task.status.as_ref().expect("status").state)
+                        .expect("task state"),
+                    v1::TaskState::Completed
+                );
+            }
+            Some(v1::stream_response::Payload::StatusUpdate(update)) => {
+                assert_eq!(
+                    v1::TaskState::try_from(update.status.as_ref().expect("status").state)
+                        .expect("task state"),
+                    v1::TaskState::Completed
+                );
+            }
+            other => panic!("unexpected final payload: {other:?}"),
+        }
+
+        server.abort();
+        let _ = server.await;
+    }
 }
 
 #[cfg(all(
@@ -418,8 +732,8 @@ mod sqlite_task_store_tests {
                 id: "persisted-task".to_string(),
                 context_id: "persisted-context".to_string(),
                 status: TaskStatus {
-                    state: TaskState::Working,
-                    timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                    state: TaskState::Working as i32,
+                    timestamp: None,
                     message: None,
                 },
                 artifacts: vec![],

@@ -6,7 +6,7 @@
 //!
 //! # Built-in Embedders
 //!
-//! - `OpenAIEmbedder`: Uses OpenAI's embedding API (requires `memory-qdrant` feature)
+//! - `OpenAIEmbedder`: Uses `OpenAI`'s embedding API (requires `memory-qdrant` feature)
 //!
 //! # Custom Embedders
 //!
@@ -75,7 +75,7 @@ pub trait Embedder: MaybeSend + MaybeSync {
         Ok(results)
     }
 
-    /// Embedding dimension (e.g., 1536 for OpenAI text-embedding-3-small).
+    /// Embedding dimension (e.g., 1536 for `OpenAI` text-embedding-3-small).
     ///
     /// This is used to configure vector database collections.
     fn dimension(&self) -> usize;

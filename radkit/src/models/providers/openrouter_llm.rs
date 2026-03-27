@@ -384,6 +384,69 @@ impl OpenRouterLlm {
     }
 }
 
+#[cfg_attr(all(target_os = "wasi", target_env = "p1"), async_trait::async_trait(?Send))]
+#[cfg_attr(
+    not(all(target_os = "wasi", target_env = "p1")),
+    async_trait::async_trait
+)]
+impl BaseLlm for OpenRouterLlm {
+    fn model_name(&self) -> &str {
+        &self.model_name
+    }
+
+    async fn generate_content(
+        &self,
+        thread: Thread,
+        toolset: Option<Arc<dyn BaseToolset>>,
+    ) -> AgentResult<LlmResponse> {
+        let payload = self.build_request_payload(thread, toolset).await?;
+        let client = reqwest::Client::new();
+
+        let mut request = client
+            .post(&self.base_url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&payload);
+
+        if let Some(site_url) = &self.site_url {
+            request = request.header("HTTP-Referer", site_url);
+        }
+
+        if let Some(app_name) = &self.app_name {
+            request = request.header("X-Title", app_name);
+        }
+
+        let response = request.send().await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+
+            return Err(match status.as_u16() {
+                401 | 403 => AgentError::LlmAuthentication {
+                    provider: "OpenRouter".to_string(),
+                },
+                429 => AgentError::LlmRateLimit {
+                    provider: "OpenRouter".to_string(),
+                },
+                _ => AgentError::LlmProvider {
+                    provider: "OpenRouter".to_string(),
+                    message: format!("HTTP {status}: {error_body}"),
+                },
+            });
+        }
+
+        let response_body: Value = response.json().await?;
+        let content = Self::parse_response(&response_body)?;
+        let usage = Self::parse_usage(&response_body);
+
+        Ok(LlmResponse::new(content, usage))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,11 +462,11 @@ mod tests {
         async_trait::async_trait
     )]
     impl BaseTool for TestTool {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "openrouter_tool"
         }
 
-        fn description(&self) -> &str {
+        fn description(&self) -> &'static str {
             "A test tool"
         }
 
@@ -433,7 +496,7 @@ mod tests {
     )]
     impl BaseToolset for SimpleToolset {
         async fn get_tools(&self) -> Vec<&dyn BaseTool> {
-            self.0.iter().map(|b| b.as_ref()).collect()
+            self.0.iter().map(std::convert::AsRef::as_ref).collect()
         }
 
         async fn close(&self) {}
@@ -546,68 +609,5 @@ mod tests {
             Some(value) => std::env::set_var(OpenRouterLlm::API_KEY_ENV, value),
             None => std::env::remove_var(OpenRouterLlm::API_KEY_ENV),
         }
-    }
-}
-
-#[cfg_attr(all(target_os = "wasi", target_env = "p1"), async_trait::async_trait(?Send))]
-#[cfg_attr(
-    not(all(target_os = "wasi", target_env = "p1")),
-    async_trait::async_trait
-)]
-impl BaseLlm for OpenRouterLlm {
-    fn model_name(&self) -> &str {
-        &self.model_name
-    }
-
-    async fn generate_content(
-        &self,
-        thread: Thread,
-        toolset: Option<Arc<dyn BaseToolset>>,
-    ) -> AgentResult<LlmResponse> {
-        let payload = self.build_request_payload(thread, toolset).await?;
-        let client = reqwest::Client::new();
-
-        let mut request = client
-            .post(&self.base_url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&payload);
-
-        if let Some(site_url) = &self.site_url {
-            request = request.header("HTTP-Referer", site_url);
-        }
-
-        if let Some(app_name) = &self.app_name {
-            request = request.header("X-Title", app_name);
-        }
-
-        let response = request.send().await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-
-            return Err(match status.as_u16() {
-                401 | 403 => AgentError::LlmAuthentication {
-                    provider: "OpenRouter".to_string(),
-                },
-                429 => AgentError::LlmRateLimit {
-                    provider: "OpenRouter".to_string(),
-                },
-                _ => AgentError::LlmProvider {
-                    provider: "OpenRouter".to_string(),
-                    message: format!("HTTP {status}: {error_body}"),
-                },
-            });
-        }
-
-        let response_body: Value = response.json().await?;
-        let content = Self::parse_response(&response_body)?;
-        let usage = Self::parse_usage(&response_body);
-
-        Ok(LlmResponse::new(content, usage))
     }
 }

@@ -4,11 +4,8 @@
 //! The tool handles routing, context tracking, and multi-turn conversations with remote agents.
 
 use crate::tools::{BaseTool, FunctionDeclaration, ToolContext, ToolResult};
-use a2a_client::types::{
-    AgentCard, Message, MessageRole, MessageSendParams, Part, SendMessageResponse,
-    SendMessageResult, SendStreamingMessageResult, TaskState,
-};
 use a2a_client::A2AClient;
+use a2a_types::{self as v1, AgentCard, Artifact, Message, Part, TaskState};
 use chrono::Utc;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -46,26 +43,23 @@ impl RemoteContextInfo {
         }
     }
 
-    fn update_from_response(&mut self, response: &SendMessageResponse) {
-        // Extract context_id and task_id from response
-        match response {
-            SendMessageResponse::Success(success) => match &success.result {
-                SendMessageResult::Task(task) => {
+    fn update_from_response(&mut self, response: &v1::SendMessageResponse) {
+        match response.payload.as_ref() {
+            Some(v1::send_message_response::Payload::Task(task)) => {
+                if !task.context_id.is_empty() {
                     self.remote_context_id = Some(task.context_id.clone());
-                    self.remote_task_id = Some(task.id.clone());
                 }
-                SendMessageResult::Message(msg) => {
-                    if let Some(ctx) = &msg.context_id {
-                        self.remote_context_id = Some(ctx.clone());
-                    }
-                    if let Some(task) = &msg.task_id {
-                        self.remote_task_id = Some(task.clone());
-                    }
-                }
-            },
-            SendMessageResponse::Error(_) => {
-                // Error response, don't update context
+                self.remote_task_id = Some(task.id.clone());
             }
+            Some(v1::send_message_response::Payload::Message(msg)) => {
+                if !msg.context_id.is_empty() {
+                    self.remote_context_id = Some(msg.context_id.clone());
+                }
+                if !msg.task_id.is_empty() {
+                    self.remote_task_id = Some(msg.task_id.clone());
+                }
+            }
+            None => {}
         }
         self.last_call = Some(Utc::now().to_rfc3339());
         self.message_count += 1;
@@ -104,12 +98,7 @@ impl A2AAgentTool {
     /// use std::collections::HashMap;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let weather_card = AgentCard::new(
-    ///     "Weather Agent",
-    ///     "Provides weather info",
-    ///     "1.0.0",
-    ///     "https://weather.example.com"
-    /// );
+    /// let weather_card = AgentCard::default();
     ///
     /// // Create authentication headers
     /// let mut headers = HashMap::new();
@@ -133,10 +122,8 @@ impl A2AAgentTool {
         for (card, agent_headers) in agents {
             let name = normalize_agent_name(&card.name);
 
-            // Validate agent card has URL
-            if card.url.is_empty() {
-                return Err(format!("Agent card '{name}' does not contain a valid URL"));
-            }
+            A2AClient::from_card(card.clone())
+                .map_err(|error| format!("Invalid agent card '{name}': {error}"))?;
 
             cards.insert(name.clone(), card);
             headers.insert(name, agent_headers);
@@ -197,7 +184,11 @@ impl A2AAgentTool {
         let endpoint = self
             .agent_cards
             .get(agent_name)
-            .map(|card| card.url.clone())
+            .and_then(|card| {
+                card.supported_interfaces
+                    .first()
+                    .map(|iface| iface.url.clone())
+            })
             .unwrap_or_default();
 
         RemoteContextInfo::new(endpoint)
@@ -222,57 +213,60 @@ impl A2AAgentTool {
         continue_conversation: bool,
     ) -> Message {
         Message {
-            kind: "message".to_string(),
             message_id: Uuid::new_v4().to_string(),
-            role: MessageRole::User,
-            parts: vec![Part::Text {
-                text: message_text.to_string(),
-                metadata: None,
-            }],
-            // Use remote context_id if continuing conversation
             context_id: if continue_conversation {
-                remote_context.remote_context_id.clone()
+                remote_context.remote_context_id.clone().unwrap_or_default()
             } else {
-                None
+                String::new()
             },
-            task_id: None, // Let remote agent create task
-            reference_task_ids: Vec::new(),
-            extensions: Vec::new(),
+            task_id: String::new(),
+            role: v1::Role::User.into(),
+            parts: vec![Part {
+                content: Some(v1::part::Content::Text(message_text.to_string())),
+                metadata: None,
+                filename: String::new(),
+                media_type: "text/plain".to_string(),
+            }],
             metadata: None,
+            extensions: Vec::new(),
+            reference_task_ids: Vec::new(),
         }
     }
 
     /// Extract human-readable response from A2A response
-    fn extract_response_content(response: &SendMessageResponse) -> String {
-        match response {
-            SendMessageResponse::Success(success) => match &success.result {
-                SendMessageResult::Task(task) => {
-                    // Extract last agent message from history
-                    task.history
-                        .iter()
-                        .rev()
-                        .find(|msg| msg.role == MessageRole::Agent)
-                        .and_then(|msg| {
-                            msg.parts.first().and_then(|part| match part {
-                                Part::Text { text, .. } => Some(text.clone()),
-                                _ => None,
-                            })
-                        })
-                        .unwrap_or_else(|| format!("Task {} created", task.id))
-                }
-                SendMessageResult::Message(msg) => msg
-                    .parts
-                    .first()
-                    .and_then(|part| match part {
-                        Part::Text { text, .. } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| "No text response".to_string()),
-            },
-            SendMessageResponse::Error(err) => {
-                format!("Error: {}", err.error.message)
+    fn extract_response_content(response: &v1::SendMessageResponse) -> String {
+        match response.payload.as_ref() {
+            Some(v1::send_message_response::Payload::Task(task)) => task
+                .history
+                .iter()
+                .rev()
+                .find(|msg| msg.role == v1::Role::Agent as i32)
+                .and_then(Self::message_text)
+                .unwrap_or_else(|| format!("Task {} created", task.id)),
+            Some(v1::send_message_response::Payload::Message(msg)) => {
+                Self::message_text(msg).unwrap_or_else(|| "No text response".to_string())
             }
+            None => "No response payload".to_string(),
         }
+    }
+
+    fn message_text(message: &Message) -> Option<String> {
+        message
+            .parts
+            .first()
+            .and_then(Self::part_text)
+            .map(str::to_owned)
+    }
+
+    const fn part_text(part: &Part) -> Option<&str> {
+        match part.content.as_ref() {
+            Some(v1::part::Content::Text(text)) => Some(text.as_str()),
+            _ => None,
+        }
+    }
+
+    fn task_state(value: i32) -> Option<TaskState> {
+        TaskState::try_from(value).ok()
     }
 
     /// Handle streaming call to remote agent
@@ -280,12 +274,12 @@ impl A2AAgentTool {
         &self,
         agent_name: &str,
         client: &A2AClient,
-        params: MessageSendParams,
+        request: v1::SendMessageRequest,
         remote_context: &mut RemoteContextInfo,
         context: &ToolContext<'_>,
     ) -> ToolResult {
         // Call streaming endpoint
-        let mut stream = match client.send_streaming_message(params).await {
+        let mut stream = match client.send_streaming_message(request).await {
             Ok(stream) => stream,
             Err(e) => {
                 return ToolResult::error(format!(
@@ -303,21 +297,25 @@ impl A2AAgentTool {
         // Process streaming events until terminal condition
         while let Some(result) = stream.next().await {
             match result {
-                Ok(event) => match event {
-                    SendStreamingMessageResult::Message(msg) => {
+                Ok(event) => match event.payload {
+                    Some(v1::stream_response::Payload::Message(msg)) => {
                         // Accumulate message
-                        if let Some(Part::Text { text, .. }) = msg.parts.first() {
-                            accumulated_messages.push(text.clone());
+                        if let Some(text) = msg.parts.first().and_then(Self::part_text) {
+                            accumulated_messages.push(text.to_string());
                         }
                     }
-                    SendStreamingMessageResult::TaskStatusUpdate(status_event) => {
+                    Some(v1::stream_response::Payload::StatusUpdate(status_event)) => {
                         // Update remote context with task_id
                         remote_context.remote_task_id = Some(status_event.task_id.clone());
                         remote_context.remote_context_id = Some(status_event.context_id.clone());
 
-                        // Check for terminal states
+                        let Some(status) = status_event.status.as_ref() else {
+                            continue;
+                        };
+                        let state =
+                            Self::task_state(status.state).unwrap_or(TaskState::Unspecified);
                         let is_terminal = matches!(
-                            status_event.status.state,
+                            state,
                             TaskState::InputRequired
                                 | TaskState::Completed
                                 | TaskState::Failed
@@ -326,31 +324,36 @@ impl A2AAgentTool {
                         );
 
                         if is_terminal {
-                            terminal_state = Some(status_event.status.state.clone());
+                            terminal_state = Some(state);
 
                             // Extract status message if available
-                            if let Some(msg) = &status_event.status.message {
-                                if let Some(Part::Text { text, .. }) = msg.parts.first() {
-                                    status_message = Some(text.clone());
+                            if let Some(msg) = &status.message {
+                                if let Some(text) = msg.parts.first().and_then(Self::part_text) {
+                                    status_message = Some(text.to_string());
                                 }
                             }
                             break;
                         }
                     }
-                    SendStreamingMessageResult::TaskArtifactUpdate(artifact_event) => {
+                    Some(v1::stream_response::Payload::ArtifactUpdate(artifact_event)) => {
                         // Accumulate artifact
-                        accumulated_artifacts.push(artifact_event.artifact.clone());
+                        if let Some(artifact) = artifact_event.artifact.clone() {
+                            accumulated_artifacts.push(artifact);
+                        }
 
                         // Check for last chunk
-                        if artifact_event.last_chunk == Some(true) {
+                        if artifact_event.last_chunk {
                             break;
                         }
                     }
-                    SendStreamingMessageResult::Task(task) => {
+                    Some(v1::stream_response::Payload::Task(task)) => {
                         // Final task object - update context
                         remote_context.remote_task_id = Some(task.id.clone());
-                        remote_context.remote_context_id = Some(task.context_id.clone());
+                        if !task.context_id.is_empty() {
+                            remote_context.remote_context_id = Some(task.context_id.clone());
+                        }
                     }
+                    None => {}
                 },
                 Err(e) => {
                     return ToolResult::error(format!("Streaming error from {agent_name}: {e}"));
@@ -383,7 +386,7 @@ impl A2AAgentTool {
         terminal_state: Option<TaskState>,
         status_message: Option<String>,
         accumulated_messages: &[String],
-        accumulated_artifacts: &[a2a_client::types::Artifact],
+        accumulated_artifacts: &[Artifact],
     ) -> String {
         match (terminal_state, status_message) {
             (Some(TaskState::Completed), message) => {
@@ -423,7 +426,7 @@ impl A2AAgentTool {
     }
 
     /// Format artifacts for display
-    fn format_artifacts(artifacts: &[a2a_client::types::Artifact]) -> String {
+    fn format_artifacts(artifacts: &[Artifact]) -> String {
         if artifacts.is_empty() {
             return String::from("No artifacts");
         }
@@ -431,19 +434,34 @@ impl A2AAgentTool {
         artifacts
             .iter()
             .map(|artifact| {
-                let name = artifact.name.as_deref().unwrap_or("unnamed");
+                let name = if artifact.name.is_empty() {
+                    "unnamed"
+                } else {
+                    artifact.name.as_str()
+                };
 
                 // Extract text content from artifact parts
                 let content = artifact
                     .parts
                     .iter()
                     .filter_map(|part| match part {
-                        Part::Text { text, .. } => Some(text.clone()),
-                        Part::Data { data, .. } => Some(
-                            data.as_str()
-                                .map_or_else(|| data.to_string(), std::string::ToString::to_string),
-                        ),
-                        Part::File { .. } => None,
+                        Part {
+                            content: Some(v1::part::Content::Text(text)),
+                            ..
+                        } => Some(text.clone()),
+                        Part {
+                            content: Some(v1::part::Content::Data(data)),
+                            ..
+                        } => serde_json::to_string(data).ok(),
+                        Part {
+                            content: Some(v1::part::Content::Url(url)),
+                            ..
+                        } => Some(url.clone()),
+                        Part {
+                            content: Some(v1::part::Content::Raw(_)),
+                            ..
+                        }
+                        | Part { content: None, .. } => None,
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
@@ -463,12 +481,12 @@ impl A2AAgentTool {
         &self,
         agent_name: &str,
         client: &A2AClient,
-        params: MessageSendParams,
+        request: v1::SendMessageRequest,
         remote_context: &mut RemoteContextInfo,
         context: &ToolContext<'_>,
     ) -> ToolResult {
         // Call synchronous endpoint
-        let response = match client.send_message(params).await {
+        let response = match client.send_message(request).await {
             Ok(resp) => resp,
             Err(e) => {
                 return ToolResult::error(format!("Failed to call {agent_name}: {e}"));
@@ -582,23 +600,28 @@ impl BaseTool for A2AAgentTool {
         // 4. Build A2A message
         let message = Self::build_a2a_message(message_text, &remote_context, continue_conversation);
 
-        let params = MessageSendParams {
-            message,
+        let request = v1::SendMessageRequest {
+            tenant: String::new(),
+            message: Some(message),
             configuration: None,
             metadata: None,
         };
 
         // 5. Check if agent supports streaming
         let agent_card = self.agent_cards.get(agent_name).unwrap(); // Safe: already validated
-        let supports_streaming = agent_card.capabilities.streaming.unwrap_or(false);
+        let supports_streaming = agent_card
+            .capabilities
+            .as_ref()
+            .and_then(|caps| caps.streaming)
+            .unwrap_or(false);
 
         if supports_streaming {
             // Use streaming path
-            self.call_with_streaming(agent_name, &client, params, &mut remote_context, context)
+            self.call_with_streaming(agent_name, &client, request, &mut remote_context, context)
                 .await
         } else {
             // Use synchronous path
-            self.call_synchronous(agent_name, &client, params, &mut remote_context, context)
+            self.call_synchronous(agent_name, &client, request, &mut remote_context, context)
                 .await
         }
     }

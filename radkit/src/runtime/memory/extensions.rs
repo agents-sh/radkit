@@ -16,7 +16,7 @@ use super::{ContentSource, MemoryContent, MemoryService};
 
 /// A completed conversation to be ingested into long-term memory.
 ///
-/// Note: Named "CompletedConversation" to distinguish from A2A protocol's
+/// Note: Named "`CompletedConversation`" to distinguish from A2A protocol's
 /// conversation concept. This represents a finished task's messages being
 /// archived for future semantic search.
 #[derive(Debug, Clone)]
@@ -42,6 +42,7 @@ pub struct CompletedMessage {
 
 impl CompletedConversation {
     /// Converts to memory contents for ingestion.
+    #[must_use]
     pub fn into_memory_contents(self) -> Vec<MemoryContent> {
         self.messages
             .into_iter()
@@ -93,6 +94,7 @@ impl Document {
     }
 
     /// Chunks the document and converts to memory contents.
+    #[must_use]
     pub fn into_memory_contents(self, chunk_size: usize) -> Vec<MemoryContent> {
         let chunks = chunk_text(&self.content, chunk_size);
         let total_chunks = chunks.len();
@@ -123,7 +125,7 @@ pub fn chunk_text(text: &str, chunk_size: usize) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut current = String::new();
 
-    for sentence in text.split_inclusive(|c| c == '.' || c == '!' || c == '?') {
+    for sentence in text.split_inclusive(['.', '!', '?']) {
         if current.len() + sentence.len() > chunk_size && !current.is_empty() {
             chunks.push(std::mem::take(&mut current));
         }
@@ -243,7 +245,7 @@ pub trait MemoryServiceDocumentExt: MemoryService {
 
     /// Delete all chunks of a document.
     ///
-    /// Note: This uses the document_id to construct chunk IDs directly rather
+    /// Note: This uses the `document_id` to construct chunk IDs directly rather
     /// than searching, which avoids issues with empty queries on vector backends.
     async fn delete_document(
         &self,
@@ -449,7 +451,7 @@ mod async_tests {
         assert_eq!(results_new.len(), 1, "New content should be searchable");
     }
 
-    /// Test that delete_document stops quickly when the document doesn't exist.
+    /// Test that `delete_document` stops quickly when the document doesn't exist.
     #[tokio::test]
     async fn delete_document_stops_early_for_missing_doc() {
         let memory = InMemoryMemoryService::new();
@@ -466,7 +468,7 @@ mod async_tests {
         // The test passing quickly (not timing out) proves the fix works
     }
 
-    /// Test that delete_document handles sparse chunk IDs correctly.
+    /// Test that `delete_document` handles sparse chunk IDs correctly.
     #[tokio::test]
     async fn delete_document_handles_normal_case() {
         let memory = InMemoryMemoryService::new();

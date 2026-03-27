@@ -439,6 +439,79 @@ impl AnthropicLlm {
     }
 }
 
+#[cfg_attr(all(target_os = "wasi", target_env = "p1"), async_trait::async_trait(?Send))]
+#[cfg_attr(
+    not(all(target_os = "wasi", target_env = "p1")),
+    async_trait::async_trait
+)]
+impl BaseLlm for AnthropicLlm {
+    fn model_name(&self) -> &str {
+        &self.model_name
+    }
+
+    async fn generate_content(
+        &self,
+        thread: Thread,
+        toolset: Option<Arc<dyn BaseToolset>>,
+    ) -> AgentResult<LlmResponse> {
+        // Build request payload
+        let payload = self.build_request_payload(thread, toolset).await?;
+
+        // Create HTTP client
+        let client = reqwest::Client::new();
+
+        // Make request
+        let response = client
+            .post(&self.base_url)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", ANTHROPIC_API_VERSION)
+            .header("content-type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        // Check for HTTP errors
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+
+            return Err(match status.as_u16() {
+                401 => AgentError::LlmAuthentication {
+                    provider: "Anthropic".to_string(),
+                },
+                429 => AgentError::LlmRateLimit {
+                    provider: "Anthropic".to_string(),
+                },
+                _ => AgentError::LlmProvider {
+                    provider: "Anthropic".to_string(),
+                    message: format!("HTTP {status}: {error_body}"),
+                },
+            });
+        }
+
+        // Parse response
+        let response_body: Value = response.json().await?;
+
+        // Check for stop_reason indicating content filtering
+        if let Some(stop_reason) = response_body.get("stop_reason").and_then(|v| v.as_str()) {
+            if stop_reason == "content_filter" {
+                return Err(AgentError::ContentFiltered {
+                    reason: "Content was filtered by Anthropic".to_string(),
+                });
+            }
+        }
+
+        // Parse content and usage
+        let content = Self::parse_response(&response_body)?;
+        let usage = Self::parse_usage(&response_body);
+
+        Ok(LlmResponse::new(content, usage))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,11 +527,11 @@ mod tests {
         async_trait::async_trait
     )]
     impl BaseTool for TestTool {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "anthropic_tool"
         }
 
-        fn description(&self) -> &str {
+        fn description(&self) -> &'static str {
             "Test tool"
         }
 
@@ -488,7 +561,7 @@ mod tests {
     )]
     impl BaseToolset for SimpleToolset {
         async fn get_tools(&self) -> Vec<&dyn BaseTool> {
-            self.0.iter().map(|b| b.as_ref()).collect()
+            self.0.iter().map(std::convert::AsRef::as_ref).collect()
         }
 
         async fn close(&self) {}
@@ -587,78 +660,5 @@ mod tests {
             Some(value) => std::env::set_var(AnthropicLlm::API_KEY_ENV, value),
             None => std::env::remove_var(AnthropicLlm::API_KEY_ENV),
         }
-    }
-}
-
-#[cfg_attr(all(target_os = "wasi", target_env = "p1"), async_trait::async_trait(?Send))]
-#[cfg_attr(
-    not(all(target_os = "wasi", target_env = "p1")),
-    async_trait::async_trait
-)]
-impl BaseLlm for AnthropicLlm {
-    fn model_name(&self) -> &str {
-        &self.model_name
-    }
-
-    async fn generate_content(
-        &self,
-        thread: Thread,
-        toolset: Option<Arc<dyn BaseToolset>>,
-    ) -> AgentResult<LlmResponse> {
-        // Build request payload
-        let payload = self.build_request_payload(thread, toolset).await?;
-
-        // Create HTTP client
-        let client = reqwest::Client::new();
-
-        // Make request
-        let response = client
-            .post(&self.base_url)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_API_VERSION)
-            .header("content-type", "application/json")
-            .json(&payload)
-            .send()
-            .await?;
-
-        // Check for HTTP errors
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-
-            return Err(match status.as_u16() {
-                401 => AgentError::LlmAuthentication {
-                    provider: "Anthropic".to_string(),
-                },
-                429 => AgentError::LlmRateLimit {
-                    provider: "Anthropic".to_string(),
-                },
-                _ => AgentError::LlmProvider {
-                    provider: "Anthropic".to_string(),
-                    message: format!("HTTP {status}: {error_body}"),
-                },
-            });
-        }
-
-        // Parse response
-        let response_body: Value = response.json().await?;
-
-        // Check for stop_reason indicating content filtering
-        if let Some(stop_reason) = response_body.get("stop_reason").and_then(|v| v.as_str()) {
-            if stop_reason == "content_filter" {
-                return Err(AgentError::ContentFiltered {
-                    reason: "Content was filtered by Anthropic".to_string(),
-                });
-            }
-        }
-
-        // Parse content and usage
-        let content = Self::parse_response(&response_body)?;
-        let usage = Self::parse_usage(&response_body);
-
-        Ok(LlmResponse::new(content, usage))
     }
 }

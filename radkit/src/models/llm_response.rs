@@ -192,7 +192,7 @@ mod tests {
     fn llm_response_accessors_work() {
         let content = Content::from_parts(vec![ContentPart::Text("Hello".into())]);
         let usage = TokenUsage::new(1, 2, 3);
-        let response = LlmResponse::new(content.clone(), usage.clone());
+        let response = LlmResponse::new(content, usage);
 
         assert_eq!(response.content().first_text(), Some("Hello"));
         assert_eq!(response.usage().total_tokens(), 3);

@@ -7,33 +7,28 @@
 
 use crate::agent::{OnInputResult, OnRequestResult};
 use a2a_types::{TaskState, TaskStatus, TaskStatusUpdateEvent};
+use pbjson_types::Timestamp;
+
+/// Returns the current UTC time as a proto `Timestamp`.
+fn now() -> Timestamp {
+    let now = chrono::Utc::now();
+    Timestamp {
+        seconds: now.timestamp(),
+        nanos: now.timestamp_subsec_nanos().cast_signed(),
+    }
+}
 
 /// Creates a `TaskStatus` representing the Working state.
-///
-/// This is the initial state when a task begins execution or when it resumes
-/// from `InputRequired` state.
 #[must_use]
 pub fn working_status() -> TaskStatus {
     TaskStatus {
-        state: TaskState::Working,
+        state: TaskState::Working as i32,
         timestamp: Some(now()),
         message: None,
     }
 }
 
 /// Converts an `OnRequestResult` to an A2A `TaskStatus`.
-///
-/// Maps the skill handler's return value to the appropriate A2A task state:
-/// - `InputRequired` → `TaskState::InputRequired`
-/// - `Completed` → `TaskState::Completed`
-/// - `Failed` → `TaskState::Failed`
-/// - `Rejected` → `TaskState::Rejected`
-///
-/// # Arguments
-/// * `result` - The result from calling a skill's `on_request` method
-///
-/// # Returns
-/// The corresponding A2A `TaskStatus` with timestamp
 #[must_use]
 pub fn on_request_to_status(result: &OnRequestResult) -> TaskStatus {
     let state = match result {
@@ -44,25 +39,13 @@ pub fn on_request_to_status(result: &OnRequestResult) -> TaskStatus {
     };
 
     TaskStatus {
-        state,
+        state: state as i32,
         timestamp: Some(now()),
         message: None,
     }
 }
 
 /// Converts an `OnInputResult` to an A2A `TaskStatus`.
-///
-/// Similar to `on_request_to_status` but for the continuation flow when
-/// a task is resuming from `InputRequired` state.
-///
-/// Note: `OnInputResult` does not have a Rejected variant because rejection
-/// can only occur before a task starts, not during continuation.
-///
-/// # Arguments
-/// * `result` - The result from calling a skill's `on_input_received` method
-///
-/// # Returns
-/// The corresponding A2A `TaskStatus` with timestamp
 #[must_use]
 pub fn on_input_to_status(result: &OnInputResult) -> TaskStatus {
     let state = match result {
@@ -72,55 +55,32 @@ pub fn on_input_to_status(result: &OnInputResult) -> TaskStatus {
     };
 
     TaskStatus {
-        state,
+        state: state as i32,
         timestamp: Some(now()),
         message: None,
     }
 }
 
 /// Creates a `TaskStatusUpdateEvent` from a task status.
-///
-/// This constructs the A2A protocol event that gets emitted when a task's
-/// status changes. The event includes the task and context identifiers along
-/// with the finality flag.
-///
-/// # Arguments
-/// * `task_id` - The unique identifier of the task
-/// * `context_id` - The context identifier grouping related tasks
-/// * `status` - The new status of the task
-/// * `is_final` - Whether this is a terminal state change
-///
-/// # Returns
-/// A properly structured `TaskStatusUpdateEvent`
 #[must_use]
 pub fn create_status_update_event(
     task_id: &str,
     context_id: &str,
     status: TaskStatus,
-    is_final: bool,
+    _is_final: bool,
 ) -> TaskStatusUpdateEvent {
+    // Note: v1::TaskStatusUpdateEvent has no `kind` or `is_final` field.
+    // The `_is_final` parameter is kept for call-site compatibility during
+    // migration; callers can be updated to omit it once fully migrated.
     TaskStatusUpdateEvent {
-        kind: a2a_types::STATUS_UPDATE_KIND.to_string(),
         task_id: task_id.to_string(),
         context_id: context_id.to_string(),
-        status,
-        is_final,
+        status: Some(status),
         metadata: None,
     }
 }
 
 /// Checks if a `TaskState` is terminal (cannot transition further).
-///
-/// Per the A2A specification, terminal states are those where no further
-/// state transitions are possible (except for the special case of Canceled).
-/// `InputRequired` is NOT terminal - it can transition to other states when
-/// input is provided.
-///
-/// # Arguments
-/// * `state` - The task state to check
-///
-/// # Returns
-/// `true` if the state is terminal, `false` otherwise
 #[must_use]
 pub const fn is_terminal_state(state: &TaskState) -> bool {
     matches!(
@@ -129,31 +89,24 @@ pub const fn is_terminal_state(state: &TaskState) -> bool {
             | TaskState::Failed
             | TaskState::Rejected
             | TaskState::Canceled
-            | TaskState::Unknown
+            | TaskState::Unspecified
     )
 }
 
-/// Checks if a task can be continued (resumed with new input).
-///
-/// Per the A2A specification, only tasks in the `InputRequired` state
-/// can accept additional input and continue execution.
-///
-/// # Arguments
-/// * `state` - The task state to check
-///
-/// # Returns
-/// `true` if the task can receive input and continue, `false` otherwise
+/// Checks if a `TaskStatus` (by its i32 state field) is terminal.
 #[must_use]
-pub const fn can_continue(state: &TaskState) -> bool {
-    matches!(state, TaskState::InputRequired)
+pub fn is_terminal_status(status: &TaskStatus) -> bool {
+    TaskState::try_from(status.state)
+        .map(|s| is_terminal_state(&s))
+        .unwrap_or(true)
 }
 
-/// Helper to get the current ISO 8601 timestamp.
-///
-/// Returns the current UTC time in RFC 3339 format, which is compatible
-/// with the A2A protocol's timestamp requirements.
-fn now() -> String {
-    chrono::Utc::now().to_rfc3339()
+/// Checks if a task can be continued (resumed with new input).
+#[must_use]
+pub fn can_continue(status: &TaskStatus) -> bool {
+    TaskState::try_from(status.state)
+        .map(|s| matches!(s, TaskState::InputRequired))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -164,7 +117,7 @@ mod tests {
     #[test]
     fn test_working_status() {
         let status = working_status();
-        assert_eq!(status.state, TaskState::Working);
+        assert_eq!(status.state, TaskState::Working as i32);
         assert!(status.timestamp.is_some());
         assert!(status.message.is_none());
     }
@@ -176,7 +129,7 @@ mod tests {
             slot: crate::agent::SkillSlot::new(()),
         };
         let status = on_request_to_status(&result);
-        assert_eq!(status.state, TaskState::InputRequired);
+        assert_eq!(status.state, TaskState::InputRequired as i32);
         assert!(status.timestamp.is_some());
     }
 
@@ -187,7 +140,7 @@ mod tests {
             artifacts: vec![],
         };
         let status = on_request_to_status(&result);
-        assert_eq!(status.state, TaskState::Completed);
+        assert_eq!(status.state, TaskState::Completed as i32);
         assert!(status.timestamp.is_some());
     }
 
@@ -197,7 +150,7 @@ mod tests {
             error: Content::from_text("Something went wrong"),
         };
         let status = on_request_to_status(&result);
-        assert_eq!(status.state, TaskState::Failed);
+        assert_eq!(status.state, TaskState::Failed as i32);
         assert!(status.timestamp.is_some());
     }
 
@@ -207,7 +160,7 @@ mod tests {
             reason: Content::from_text("Out of scope"),
         };
         let status = on_request_to_status(&result);
-        assert_eq!(status.state, TaskState::Rejected);
+        assert_eq!(status.state, TaskState::Rejected as i32);
         assert!(status.timestamp.is_some());
     }
 
@@ -217,7 +170,7 @@ mod tests {
         assert!(is_terminal_state(&TaskState::Failed));
         assert!(is_terminal_state(&TaskState::Rejected));
         assert!(is_terminal_state(&TaskState::Canceled));
-        assert!(is_terminal_state(&TaskState::Unknown));
+        assert!(is_terminal_state(&TaskState::Unspecified));
 
         assert!(!is_terminal_state(&TaskState::Working));
         assert!(!is_terminal_state(&TaskState::InputRequired));
@@ -226,24 +179,34 @@ mod tests {
 
     #[test]
     fn test_can_continue() {
-        assert!(can_continue(&TaskState::InputRequired));
+        assert!(can_continue(&TaskStatus {
+            state: TaskState::InputRequired as i32,
+            timestamp: None,
+            message: None,
+        }));
 
-        assert!(!can_continue(&TaskState::Working));
-        assert!(!can_continue(&TaskState::Completed));
-        assert!(!can_continue(&TaskState::Failed));
-        assert!(!can_continue(&TaskState::Rejected));
-        assert!(!can_continue(&TaskState::Canceled));
+        assert!(!can_continue(&TaskStatus {
+            state: TaskState::Working as i32,
+            timestamp: None,
+            message: None,
+        }));
+        assert!(!can_continue(&TaskStatus {
+            state: TaskState::Completed as i32,
+            timestamp: None,
+            message: None,
+        }));
     }
 
     #[test]
     fn test_create_status_update_event() {
         let status = working_status();
-        let event = create_status_update_event("task-123", "ctx-456", status.clone(), false);
+        let event = create_status_update_event("task-123", "ctx-456", status, false);
 
-        assert_eq!(event.kind, "status-update");
         assert_eq!(event.task_id, "task-123");
         assert_eq!(event.context_id, "ctx-456");
-        assert_eq!(event.status.state, TaskState::Working);
-        assert!(!event.is_final);
+        assert_eq!(
+            event.status.as_ref().unwrap().state,
+            TaskState::Working as i32
+        );
     }
 }

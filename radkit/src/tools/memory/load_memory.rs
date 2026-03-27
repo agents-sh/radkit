@@ -36,11 +36,11 @@ impl LoadMemoryTool {
     async_trait::async_trait
 )]
 impl BaseTool for LoadMemoryTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "load_memory"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Search long-term memory for past conversations and user facts. \
          Use this to recall what was discussed in previous sessions or \
          retrieve user preferences."
@@ -80,9 +80,8 @@ impl BaseTool for LoadMemoryTool {
 
         let limit = args
             .get("limit")
-            .and_then(|v| v.as_u64())
-            .map(|v| v.min(10) as usize)
-            .unwrap_or(5);
+            .and_then(serde_json::Value::as_u64)
+            .map_or(5, |v| v.min(10) as usize);
 
         let options = SearchOptions::history_only().with_limit(limit);
 

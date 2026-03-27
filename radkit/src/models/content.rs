@@ -454,7 +454,7 @@ mod tests {
     fn tool_call_iteration_round_trips() {
         let call = ToolCall::new("call-1", "echo", json!({"value": 1}));
         let content = Content::from_parts(vec![
-            ContentPart::ToolCall(call.clone()),
+            ContentPart::ToolCall(call),
             ContentPart::Text("ignored".to_string()),
         ]);
 

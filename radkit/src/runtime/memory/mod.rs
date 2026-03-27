@@ -126,7 +126,7 @@ pub trait MemoryService: MaybeSend + MaybeSync {
     ///
     /// # Empty Query Behavior
     ///
-    /// - **InMemory backend**: Returns all entries (filtered by source_type) with score 1.0
+    /// - **`InMemory` backend**: Returns all entries (filtered by `source_type`) with score 1.0
     /// - **Vector backends**: Behavior depends on the embedding model
     async fn search(
         &self,

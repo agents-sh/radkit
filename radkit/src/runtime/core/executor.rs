@@ -33,14 +33,15 @@ use crate::agent::{
 use crate::compat;
 use crate::errors::{AgentError, AgentResult};
 use crate::models::{utils, Content, Role};
-use crate::runtime::context::{AuthContext, ProgressSender, State, TaskState};
+use crate::runtime::context::{AuthContext, ProgressSender, State, TaskState as RuntimeTaskState};
 use crate::runtime::core::{
     negotiator::{NegotiationDecision, Negotiator},
     status_mapper, TaskEventBus, TaskEventReceiver,
 };
 use crate::runtime::task_manager::{Task, TaskEvent, TaskManager};
 use crate::runtime::AgentRuntime;
-use a2a_types::{MessageSendParams, SendMessageResult, TaskIdParams, TaskQueryParams};
+use a2a_types::TaskStatus;
+use a2a_types::{self as v1, TaskArtifactUpdateEvent, TaskState};
 use std::sync::Arc;
 use tracing::error;
 use uuid::Uuid;
@@ -94,7 +95,7 @@ impl TaskEventWriter {
         task_id: Option<&str>,
         role: Role,
         content: Content,
-    ) -> AgentResult<a2a_types::Message> {
+    ) -> AgentResult<v1::Message> {
         let message = utils::create_a2a_message(Some(context_id), task_id, role, content);
         self.push(auth_ctx, TaskEvent::Message(message.clone()))
             .await?;
@@ -106,7 +107,7 @@ impl TaskEventWriter {
         auth_ctx: &AuthContext,
         task_id: &str,
         context_id: &str,
-        final_status: a2a_types::TaskStatus,
+        final_status: TaskStatus,
         is_final: bool,
     ) -> AgentResult<()> {
         let status_event =
@@ -123,13 +124,12 @@ impl TaskEventWriter {
         artifacts: &[Artifact],
     ) -> AgentResult<()> {
         for artifact in artifacts {
-            let event = a2a_types::TaskArtifactUpdateEvent {
-                kind: a2a_types::ARTIFACT_UPDATE_KIND.to_string(),
+            let event = TaskArtifactUpdateEvent {
                 task_id: task_id.to_string(),
                 context_id: context_id.to_string(),
-                artifact: utils::artifact_to_a2a(artifact),
-                append: None,
-                last_chunk: Some(true),
+                artifact: Some(utils::artifact_to_a2a(artifact)),
+                append: false,
+                last_chunk: true,
                 metadata: None,
             };
             self.push(auth_ctx, TaskEvent::ArtifactUpdate(event))
@@ -159,27 +159,21 @@ impl TaskIdentifiers {
 #[derive(Debug)]
 pub(crate) enum PreparedSendMessage {
     Task(TaskStream),
-    Message(a2a_types::Message),
+    Message(v1::Message),
 }
 
 #[cfg_attr(all(target_os = "wasi", target_env = "p1"), allow(dead_code))]
 #[derive(Copy, Clone, Debug)]
 enum DeliveryMode {
-    /// Blocking delivery corresponds to the `message/send` RPC defined in the
-    /// A2A specification §7.1, where a single response is returned.
     Blocking,
-    /// Streaming delivery corresponds to `message/stream` (§7.2) where the
-    /// caller subscribes to Server-Sent Events.
     Streaming,
 }
 
-/// Internal routing outcome used to keep the synchronous (`message/send`) and
-/// streaming (`message/stream`) flows aligned with the negotiation/task logic.
 #[cfg_attr(all(target_os = "wasi", target_env = "p1"), allow(dead_code))]
 #[derive(Debug)]
 enum DeliveryOutcome {
-    Task(a2a_types::Task),
-    Message(a2a_types::Message),
+    Task(v1::Task),
+    Message(v1::Message),
     Stream(TaskStream),
 }
 
@@ -207,19 +201,19 @@ enum ExecutionResult {
 struct InitializedTask {
     task: Task,
     handler: Arc<dyn SkillHandler>,
-    task_state: TaskState,
+    task_state: RuntimeTaskState,
     identifiers: TaskIdentifiers,
 }
 
 struct PreparedContinuation {
     task: Task,
-    task_state: TaskState,
+    task_state: RuntimeTaskState,
     handler: Arc<dyn SkillHandler>,
     identifiers: TaskIdentifiers,
 }
 
 impl ExecutionResult {
-    fn status(&self) -> a2a_types::TaskStatus {
+    fn status(&self) -> TaskStatus {
         match self {
             Self::Initial(result) => status_mapper::on_request_to_status(result),
             Self::Input(result) => status_mapper::on_input_to_status(result),
@@ -256,14 +250,22 @@ impl ExecutionResult {
 }
 
 impl MessageRoute {
-    /// Determines the message scope based on the presence of `context_id` /
-    /// `task_id`, enforcing the A2A requirement that `task_id` cannot be sent
-    /// without its parent `context_id`.
-    fn from_params(params: &MessageSendParams) -> AgentResult<Self> {
-        match (
-            params.message.context_id.clone(),
-            params.message.task_id.clone(),
-        ) {
+    fn from_params(params: &v1::SendMessageRequest) -> AgentResult<Self> {
+        let msg = params
+            .message
+            .as_ref()
+            .ok_or_else(|| AgentError::InvalidInput("message is required".to_string()))?;
+        let context_id = if msg.context_id.is_empty() {
+            None
+        } else {
+            Some(msg.context_id.clone())
+        };
+        let task_id = if msg.task_id.is_empty() {
+            None
+        } else {
+            Some(msg.task_id.clone())
+        };
+        match (context_id, task_id) {
             (Some(context_id), Some(task_id)) => Ok(Self::ExistingTask {
                 context_id,
                 task_id,
@@ -284,22 +286,19 @@ impl RequestExecutor {
     }
 
     #[cfg_attr(all(target_os = "wasi", target_env = "p1"), allow(dead_code))]
-    /// Handles a message send request and returns the result.
-    ///
     /// # Errors
-    ///
-    /// Returns an error if message processing fails or the task cannot be created.
+    /// Returns an error if the message cannot be processed or the task cannot be created.
     pub async fn handle_send_message(
         &self,
-        params: MessageSendParams,
-    ) -> AgentResult<SendMessageResult> {
+        params: v1::SendMessageRequest,
+    ) -> AgentResult<v1::SendMessageResponse> {
         self.handle_send_message_internal(params).await
     }
 
     #[cfg_attr(all(target_os = "wasi", target_env = "p1"), allow(dead_code))]
     pub(crate) async fn handle_message_stream(
         &self,
-        params: MessageSendParams,
+        params: v1::SendMessageRequest,
     ) -> AgentResult<PreparedSendMessage> {
         self.handle_message_stream_internal(params).await
     }
@@ -307,14 +306,18 @@ impl RequestExecutor {
     #[cfg_attr(all(target_os = "wasi", target_env = "p1"), allow(dead_code))]
     async fn handle_send_message_internal(
         &self,
-        params: MessageSendParams,
-    ) -> AgentResult<SendMessageResult> {
+        params: v1::SendMessageRequest,
+    ) -> AgentResult<v1::SendMessageResponse> {
         match self
             .dispatch_message(params, DeliveryMode::Blocking)
             .await?
         {
-            DeliveryOutcome::Task(task) => Ok(SendMessageResult::Task(task)),
-            DeliveryOutcome::Message(message) => Ok(SendMessageResult::Message(message)),
+            DeliveryOutcome::Task(task) => Ok(v1::SendMessageResponse {
+                payload: Some(v1::send_message_response::Payload::Task(task)),
+            }),
+            DeliveryOutcome::Message(message) => Ok(v1::SendMessageResponse {
+                payload: Some(v1::send_message_response::Payload::Message(message)),
+            }),
             DeliveryOutcome::Stream(_) => Err(AgentError::Internal {
                 component: "runtime".into(),
                 reason: "streaming response produced for blocking message/send".into(),
@@ -325,7 +328,7 @@ impl RequestExecutor {
     #[cfg_attr(all(target_os = "wasi", target_env = "p1"), allow(dead_code))]
     async fn handle_message_stream_internal(
         &self,
-        params: MessageSendParams,
+        params: v1::SendMessageRequest,
     ) -> AgentResult<PreparedSendMessage> {
         match self
             .dispatch_message(params, DeliveryMode::Streaming)
@@ -340,13 +343,9 @@ impl RequestExecutor {
         }
     }
 
-    /// Routes an inbound `message/send` or `message/stream` payload into the
-    /// correct code path (existing task continuation, contextual negotiation,
-    /// or creation of a brand-new context) while preserving the behavioral
-    /// differences mandated by §7.1 (single response) and §7.2 (SSE stream).
     async fn dispatch_message(
         &self,
-        params: MessageSendParams,
+        params: v1::SendMessageRequest,
         mode: DeliveryMode,
     ) -> AgentResult<DeliveryOutcome> {
         let auth_context = self.runtime.auth().get_auth_context();
@@ -366,16 +365,12 @@ impl RequestExecutor {
         }
     }
 
-    /// Continues an in-flight task, either synchronously (returning a `Task`
-    /// snapshot as required by `message/send`) or asynchronously (spawning
-    /// background execution for `message/stream`). This enforces the Life of a
-    /// Task rule that only `input-required` tasks can progress further.
     async fn handle_existing_task(
         &self,
         auth_ctx: &AuthContext,
         context_id: String,
         task_id: String,
-        params: MessageSendParams,
+        params: v1::SendMessageRequest,
         mode: DeliveryMode,
     ) -> AgentResult<DeliveryOutcome> {
         let stored_task = self
@@ -400,7 +395,7 @@ impl RequestExecutor {
             .await?
             .len();
 
-        let content = Content::from(params.message);
+        let content = Content::from(params.message.unwrap_or_default());
         self.append_message_event(
             auth_ctx,
             &context_id,
@@ -426,14 +421,11 @@ impl RequestExecutor {
         }
     }
 
-    /// Handles messages that reference an existing context but no specific
-    /// task, invoking the negotiator to decide whether we should start a new
-    /// task, ask for clarification, or reject the request (A2A §7.1/§7.2).
     async fn handle_existing_context(
         &self,
         auth_ctx: &AuthContext,
         context_id: String,
-        params: MessageSendParams,
+        params: v1::SendMessageRequest,
         mode: DeliveryMode,
     ) -> AgentResult<DeliveryOutcome> {
         let related_tasks = self
@@ -454,7 +446,7 @@ impl RequestExecutor {
             )));
         }
 
-        let content = Content::from(params.message);
+        let content = Content::from(params.message.unwrap_or_default());
         self.append_message_event(auth_ctx, &context_id, None, Role::User, content.clone())
             .await?;
 
@@ -474,15 +466,13 @@ impl RequestExecutor {
             .await
     }
 
-    /// Handles the very first message in a conversation by minting a new
-    /// `context_id`, persisting the user turn, and invoking the negotiator.
     async fn handle_new_context(
         &self,
         auth_ctx: &AuthContext,
-        params: MessageSendParams,
+        params: v1::SendMessageRequest,
         mode: DeliveryMode,
     ) -> AgentResult<DeliveryOutcome> {
-        let content = Content::from(params.message);
+        let content = Content::from(params.message.unwrap_or_default());
         let context_id = Uuid::new_v4().to_string();
 
         self.append_message_event(auth_ctx, &context_id, None, Role::User, content.clone())
@@ -507,18 +497,15 @@ impl RequestExecutor {
     #[cfg_attr(all(target_os = "wasi", target_env = "p1"), allow(dead_code))]
     pub(crate) async fn handle_task_resubscribe(
         &self,
-        params: TaskIdParams,
+        params: v1::SubscribeToTaskRequest,
     ) -> AgentResult<TaskStream> {
         self.handle_task_resubscribe_internal(params).await
     }
 
-    /// Implements `tasks/resubscribe` (§7.10) by replaying the persisted event
-    /// log and, if the task is still running, wiring up a fresh subscription
-    /// to future `TaskEvent`s.
     #[cfg_attr(all(target_os = "wasi", target_env = "p1"), allow(dead_code))]
     async fn handle_task_resubscribe_internal(
         &self,
-        params: TaskIdParams,
+        params: v1::SubscribeToTaskRequest,
     ) -> AgentResult<TaskStream> {
         let auth_ctx = self.runtime.auth().get_auth_context();
         let stored_task = self
@@ -536,13 +523,7 @@ impl RequestExecutor {
             .get_task_events(&auth_ctx, &params.id)
             .await?;
 
-        let is_final = status_mapper::is_terminal_state(&stored_task.status.state)
-            || events.iter().any(|event| {
-                matches!(
-                    event,
-                    TaskEvent::StatusUpdate(update) if update.is_final
-                )
-            });
+        let is_final = status_mapper::is_terminal_status(&stored_task.status);
 
         let receiver = if is_final {
             None
@@ -556,19 +537,13 @@ impl RequestExecutor {
         })
     }
 
-    /// Retrieves a task by its ID.
-    ///
     /// # Errors
-    ///
-    /// Returns an error if the task is not found or cannot be retrieved.
-    pub async fn handle_get_task(&self, params: TaskQueryParams) -> AgentResult<a2a_types::Task> {
+    /// Returns an error if the task is not found or retrieval fails.
+    pub async fn handle_get_task(&self, params: v1::GetTaskRequest) -> AgentResult<v1::Task> {
         self.handle_get_task_internal(params).await
     }
 
-    async fn handle_get_task_internal(
-        &self,
-        params: TaskQueryParams,
-    ) -> AgentResult<a2a_types::Task> {
+    async fn handle_get_task_internal(&self, params: v1::GetTaskRequest) -> AgentResult<v1::Task> {
         let auth_context = self.runtime.auth().get_auth_context();
         let task_id = params.id;
 
@@ -584,17 +559,14 @@ impl RequestExecutor {
         self.reconstruct_a2a_task(&auth_context, &stored_task).await
     }
 
-    /// Cancels a task by its ID.
-    ///
     /// # Errors
-    ///
-    /// Returns an error as this feature is not yet implemented.
-    #[allow(clippy::unused_async)] // Kept async for API consistency; will need async when implemented
-    pub async fn handle_cancel_task(&self, params: TaskIdParams) -> AgentResult<a2a_types::Task> {
+    /// Always returns `NotImplemented` — cancel is not yet supported.
+    #[allow(clippy::unused_async)] // async required for API parity with other handle_* methods
+    pub async fn handle_cancel_task(&self, params: v1::CancelTaskRequest) -> AgentResult<v1::Task> {
         Self::handle_cancel_task_internal(&params)
     }
 
-    fn handle_cancel_task_internal(params: &TaskIdParams) -> AgentResult<a2a_types::Task> {
+    fn handle_cancel_task_internal(params: &v1::CancelTaskRequest) -> AgentResult<v1::Task> {
         Err(AgentError::NotImplemented {
             feature: format!("tasks/cancel for task_id {}", params.id),
         })
@@ -645,7 +617,7 @@ impl RequestExecutor {
         Ok(InitializedTask {
             task,
             handler: skill_reg.handler_arc(),
-            task_state: TaskState::new(),
+            task_state: RuntimeTaskState::new(),
             identifiers: TaskIdentifiers::new(context_id.to_string(), task_id),
         })
     }
@@ -655,7 +627,7 @@ impl RequestExecutor {
         auth_ctx: &AuthContext,
         mut task: Task,
     ) -> AgentResult<PreparedContinuation> {
-        if !status_mapper::can_continue(&task.status.state) {
+        if !status_mapper::can_continue(&task.status) {
             return Err(AgentError::InvalidTaskStateTransition {
                 from: format!("{:?}", task.status.state),
                 to: "continuation".to_string(),
@@ -727,27 +699,26 @@ impl RequestExecutor {
         &self,
         auth_ctx: &AuthContext,
         task: &Task,
-    ) -> AgentResult<a2a_types::Task> {
+    ) -> AgentResult<v1::Task> {
         let events = self
             .runtime
             .task_manager()
             .get_task_events(auth_ctx, &task.id)
             .await?;
 
-        let history: Vec<a2a_types::Message> = events
+        let history: Vec<v1::Message> = events
             .into_iter()
             .filter_map(|event| match event {
                 TaskEvent::Message(msg) => Some(msg),
-                TaskEvent::StatusUpdate(update) => update.status.message,
+                TaskEvent::StatusUpdate(update) => update.status.and_then(|s| s.message),
                 TaskEvent::ArtifactUpdate(_) => None,
             })
             .collect();
 
-        Ok(a2a_types::Task {
-            kind: a2a_types::TASK_KIND.to_string(),
+        Ok(v1::Task {
             id: task.id.clone(),
             context_id: task.context_id.clone(),
-            status: task.status.clone(),
+            status: Some(task.status.clone()),
             history,
             artifacts: task.artifacts.clone(),
             metadata: None,
@@ -758,17 +729,13 @@ impl RequestExecutor {
     // Task Execution Methods
     // ========================================================================
 
-    /// Creates and executes a new task with the specified skill while honoring
-    /// the blocking semantics of `message/send`: we run the skill to completion
-    /// (or to `input-required`) before responding with the latest task snapshot
-    /// mandated by §7.1 and the "Life of a Task" guide.
     async fn start_task_blocking(
         &self,
         auth_ctx: &AuthContext,
         context_id: &str,
         skill_id: &str,
         initial_message: Content,
-    ) -> AgentResult<a2a_types::Task> {
+    ) -> AgentResult<v1::Task> {
         let InitializedTask {
             task,
             handler,
@@ -792,16 +759,12 @@ impl RequestExecutor {
         self.reconstruct_a2a_task(auth_ctx, &task).await
     }
 
-    /// Drives an existing task forward using `SkillHandler::on_input_received`
-    /// and returns an updated A2A `Task`. Only tasks in `input-required`
-    /// state are eligible, matching the state-machine expectations in the
-    /// specification and the Life-of-a-Task document.
     async fn continue_task_blocking(
         &self,
         auth_ctx: &AuthContext,
         task: Task,
         user_message: Content,
-    ) -> AgentResult<a2a_types::Task> {
+    ) -> AgentResult<v1::Task> {
         let PreparedContinuation {
             task,
             task_state,
@@ -1026,7 +989,7 @@ impl RequestExecutor {
         task_id: Option<&str>,
         role: Role,
         content: Content,
-    ) -> AgentResult<a2a_types::Message> {
+    ) -> AgentResult<v1::Message> {
         let writer = TaskEventWriter::new(&self.runtime);
         writer
             .message(auth_ctx, context_id, task_id, role, content)
@@ -1037,7 +1000,7 @@ impl RequestExecutor {
 async fn drive_task(
     runtime: Arc<dyn ExecutorRuntime>,
     handler: Arc<dyn SkillHandler>,
-    task_state: TaskState,
+    task_state: RuntimeTaskState,
     auth_ctx: AuthContext,
     identifiers: TaskIdentifiers,
     phase: ExecutionPhase,
@@ -1119,8 +1082,8 @@ async fn drive_task(
             .await?;
     }
 
-    let is_final = status_mapper::is_terminal_state(&final_status.state)
-        || final_status.state == a2a_types::TaskState::InputRequired;
+    let is_final = status_mapper::is_terminal_status(&final_status)
+        || final_status.state == TaskState::InputRequired as i32;
     writer
         .status(&auth_ctx, &task_id, &context_id, final_status, is_final)
         .await?;
@@ -1137,7 +1100,7 @@ mod tests {
     use crate::models::{Content, LlmResponse};
     use crate::runtime::RuntimeBuilder;
     use crate::test_support::FakeLlm;
-    use a2a_types::{Message, MessageRole, MessageSendParams, Part};
+    use a2a_types::{self as v1, part, Role};
 
     fn negotiation_response(skill_id: &str, reasoning: &str) -> AgentResult<LlmResponse> {
         let decision = serde_json::json!({
@@ -1168,24 +1131,26 @@ mod tests {
         text: &str,
         context_id: Option<&str>,
         task_id: Option<&str>,
-    ) -> MessageSendParams {
-        MessageSendParams {
-            message: Message {
-                kind: "message".into(),
+    ) -> v1::SendMessageRequest {
+        v1::SendMessageRequest {
+            message: Some(v1::Message {
                 message_id: uuid::Uuid::new_v4().to_string(),
-                role: MessageRole::User,
-                parts: vec![Part::Text {
-                    text: text.to_string(),
+                role: Role::User as i32,
+                parts: vec![v1::Part {
+                    content: Some(part::Content::Text(text.to_string())),
                     metadata: None,
+                    filename: String::new(),
+                    media_type: "text/plain".to_string(),
                 }],
-                context_id: context_id.map(|id| id.to_string()),
-                task_id: task_id.map(|id| id.to_string()),
+                context_id: context_id.unwrap_or_default().to_string(),
+                task_id: task_id.unwrap_or_default().to_string(),
                 reference_task_ids: Vec::new(),
                 extensions: Vec::new(),
                 metadata: None,
-            },
+            }),
             configuration: None,
             metadata: None,
+            tenant: String::new(),
         }
     }
 
@@ -1272,7 +1237,6 @@ mod tests {
             _runtime: &dyn AgentRuntime,
             content: Content,
         ) -> Result<OnInputResult, AgentError> {
-            // Slot is cleared by executor, no need to call clear_pending_slot
             let response = format!("Received: {}", content.joined_texts().unwrap_or_default());
             Ok(OnInputResult::Completed {
                 message: Some(Content::from_text(response)),
@@ -1310,12 +1274,14 @@ mod tests {
             .await
             .expect("send message result");
 
-        let task = match result {
-            SendMessageResult::Task(task) => task,
-            _ => panic!("expected task result"),
+        let Some(v1::send_message_response::Payload::Task(task)) = result.payload else {
+            panic!("expected task result")
         };
 
-        assert_eq!(task.status.state, a2a_types::TaskState::Completed);
+        assert_eq!(
+            task.status.as_ref().unwrap().state,
+            TaskState::Completed as i32
+        );
         let auth = runtime.auth().get_auth_context();
         let stored = runtime
             .task_manager()
@@ -1323,7 +1289,7 @@ mod tests {
             .await
             .expect("get task")
             .expect("task exists");
-        assert_eq!(stored.status.state, a2a_types::TaskState::Completed);
+        assert_eq!(stored.status.state, TaskState::Completed as i32);
 
         let events = runtime
             .task_manager()
@@ -1331,7 +1297,7 @@ mod tests {
             .await
             .expect("events");
         assert!(events.iter().any(
-            |event| matches!(event, TaskEvent::Message(msg) if msg.role == MessageRole::Agent)
+            |event| matches!(event, TaskEvent::Message(msg) if msg.role == Role::Agent as i32)
         ));
     }
 
@@ -1353,11 +1319,13 @@ mod tests {
             .handle_send_message(make_message_params("Start", None, None))
             .await
             .expect("first result");
-        let task = match first_result {
-            SendMessageResult::Task(task) => task,
-            _ => panic!("expected task"),
+        let Some(v1::send_message_response::Payload::Task(task)) = first_result.payload else {
+            panic!("expected task")
         };
-        assert_eq!(task.status.state, a2a_types::TaskState::InputRequired);
+        assert_eq!(
+            task.status.as_ref().unwrap().state,
+            TaskState::InputRequired as i32
+        );
 
         let auth = runtime.auth().get_auth_context();
 
@@ -1367,11 +1335,13 @@ mod tests {
             .handle_send_message(continue_params)
             .await
             .expect("continuation");
-        let updated = match continued {
-            SendMessageResult::Task(task) => task,
-            _ => panic!("expected task"),
+        let Some(v1::send_message_response::Payload::Task(updated)) = continued.payload else {
+            panic!("expected task")
         };
-        assert_eq!(updated.status.state, a2a_types::TaskState::Completed);
+        assert_eq!(
+            updated.status.as_ref().unwrap().state,
+            TaskState::Completed as i32
+        );
 
         let task_state = runtime
             .task_manager()
@@ -1400,10 +1370,10 @@ mod tests {
             .await
             .expect("clarification");
 
-        match result {
-            SendMessageResult::Message(msg) => {
-                assert_eq!(msg.role, MessageRole::Agent);
-                assert!(msg.context_id.is_some());
+        match result.payload {
+            Some(v1::send_message_response::Payload::Message(msg)) => {
+                assert_eq!(msg.role, Role::Agent as i32);
+                assert!(!msg.context_id.is_empty());
             }
             other => panic!("expected message result, got {other:?}"),
         }
@@ -1425,10 +1395,10 @@ mod tests {
             .await
             .expect("rejection");
 
-        match result {
-            SendMessageResult::Message(msg) => {
-                assert_eq!(msg.role, MessageRole::Agent);
-                assert!(msg.context_id.is_some());
+        match result.payload {
+            Some(v1::send_message_response::Payload::Message(msg)) => {
+                assert_eq!(msg.role, Role::Agent as i32);
+                assert!(!msg.context_id.is_empty());
             }
             other => panic!("expected message result, got {other:?}"),
         }
@@ -1446,9 +1416,10 @@ mod tests {
         let executor = RequestExecutor::new(exec_runtime);
 
         let err = executor
-            .handle_cancel_task(TaskIdParams {
+            .handle_cancel_task(v1::CancelTaskRequest {
                 id: "task-1".into(),
                 metadata: None,
+                tenant: String::new(),
             })
             .await
             .expect_err("expected not implemented");

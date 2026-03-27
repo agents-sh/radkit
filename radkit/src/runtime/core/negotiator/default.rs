@@ -173,17 +173,18 @@ Respond with a structured decision following the NegotiationDecision schema."
 
     /// Converts A2A Messages to a Thread for LLM consumption.
     fn messages_to_thread(messages: Vec<Message>) -> Thread {
-        use a2a_types::MessageRole;
+        use a2a_types::Role;
 
         let events: Vec<Event> = messages
             .into_iter()
             .map(|msg| {
-                let role = msg.role.clone();
+                let role = msg.role;
                 let content = Content::from(msg);
 
-                match role {
-                    MessageRole::User => Event::user(content),
-                    MessageRole::Agent => Event::assistant(content),
+                if role == Role::User as i32 {
+                    Event::user(content)
+                } else {
+                    Event::assistant(content)
                 }
             })
             .collect();
@@ -295,8 +296,7 @@ mod tests {
 
     fn negotiation_response(skill_id: &str) -> AgentResult<LlmResponse> {
         let json_str = format!(
-            r#"{{"type": "start_task", "skill_id": "{}", "reasoning": "clear intent"}}"#,
-            skill_id
+            r#"{{"type": "start_task", "skill_id": "{skill_id}", "reasoning": "clear intent"}}"#
         );
         FakeLlm::content_response(Content::from_text(json_str))
     }
@@ -330,7 +330,7 @@ mod tests {
 
         match decision {
             NegotiationDecision::StartTask { skill_id, .. } => {
-                assert_eq!(skill_id, "stub-skill")
+                assert_eq!(skill_id, "stub-skill");
             }
             other => panic!("unexpected decision: {other:?}"),
         }

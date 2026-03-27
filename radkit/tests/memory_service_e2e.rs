@@ -112,9 +112,8 @@ async fn test_history_facade_filters_to_history_sources() {
 
     // Verify the document is NOT in history results
     for result in &results {
-        match &result.source {
-            ContentSource::Document { .. } => panic!("Document should not appear in history"),
-            _ => {}
+        if let ContentSource::Document { .. } = &result.source {
+            panic!("Document should not appear in history")
         }
     }
 }

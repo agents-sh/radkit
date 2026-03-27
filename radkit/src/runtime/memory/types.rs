@@ -94,7 +94,7 @@ impl ContentSource {
 
     /// Returns the source type for filtering.
     #[must_use]
-    pub fn source_type(&self) -> SourceType {
+    pub const fn source_type(&self) -> SourceType {
         match self {
             Self::PastConversation { .. } => SourceType::PastConversation,
             Self::UserFact { .. } => SourceType::UserFact,
@@ -105,7 +105,7 @@ impl ContentSource {
 
     /// Returns the category (History or Knowledge).
     #[must_use]
-    pub fn category(&self) -> SourceCategory {
+    pub const fn category(&self) -> SourceCategory {
         match self {
             Self::PastConversation { .. } | Self::UserFact { .. } => SourceCategory::History,
             Self::Document { .. } | Self::External { .. } => SourceCategory::Knowledge,
@@ -172,14 +172,14 @@ pub struct SearchOptions {
 impl SearchOptions {
     /// Set maximum number of results.
     #[must_use]
-    pub fn with_limit(mut self, limit: usize) -> Self {
+    pub const fn with_limit(mut self, limit: usize) -> Self {
         self.limit = Some(limit);
         self
     }
 
     /// Set minimum relevance score.
     #[must_use]
-    pub fn with_min_score(mut self, min_score: f32) -> Self {
+    pub const fn with_min_score(mut self, min_score: f32) -> Self {
         self.min_score = Some(min_score);
         self
     }
@@ -191,7 +191,7 @@ impl SearchOptions {
         self
     }
 
-    /// Filter to History sources only (PastConversation + UserFact).
+    /// Filter to History sources only (`PastConversation` + `UserFact`).
     #[must_use]
     pub fn history_only() -> Self {
         Self::default().with_source_types(vec![SourceType::PastConversation, SourceType::UserFact])

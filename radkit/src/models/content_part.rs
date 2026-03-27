@@ -201,45 +201,54 @@ impl ContentPart {
     #[must_use]
     pub fn into_a2a_part(self) -> Option<a2a_types::Part> {
         match self {
-            Self::Text(text) => Some(a2a_types::Part::Text {
-                text,
+            Self::Text(text) => Some(a2a_types::Part {
+                content: Some(a2a_types::part::Content::Text(text)),
                 metadata: None,
+                filename: String::new(),
+                media_type: "text/plain".to_string(),
             }),
             Self::Data(data) => match (&*data.content_type, &data.source) {
                 ("application/json", DataSource::Base64(encoded)) => {
                     if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded) {
                         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                            return Some(a2a_types::Part::Data {
-                                data: value,
-                                metadata: None,
-                            });
+                            if let Ok(proto_val) =
+                                serde_json::from_value::<pbjson_types::Value>(value)
+                            {
+                                return Some(a2a_types::Part {
+                                    content: Some(a2a_types::part::Content::Data(proto_val)),
+                                    metadata: None,
+                                    filename: String::new(),
+                                    media_type: "application/json".to_string(),
+                                });
+                            }
                         }
                     }
-
-                    Some(a2a_types::Part::File {
-                        file: a2a_types::FileContent::WithBytes(a2a_types::FileWithBytes {
-                            bytes: encoded.clone(),
-                            mime_type: Some(data.content_type.clone()),
-                            name: data.name.clone(),
-                        }),
+                    Some(a2a_types::Part {
+                        content: Some(a2a_types::part::Content::Raw(
+                            base64::engine::general_purpose::STANDARD
+                                .decode(encoded)
+                                .unwrap_or_default(),
+                        )),
                         metadata: None,
+                        filename: data.name.unwrap_or_default(),
+                        media_type: data.content_type,
                     })
                 }
-                (_, DataSource::Base64(bytes)) => Some(a2a_types::Part::File {
-                    file: a2a_types::FileContent::WithBytes(a2a_types::FileWithBytes {
-                        bytes: bytes.clone(),
-                        mime_type: Some(data.content_type.clone()),
-                        name: data.name.clone(),
-                    }),
+                (_, DataSource::Base64(encoded)) => Some(a2a_types::Part {
+                    content: Some(a2a_types::part::Content::Raw(
+                        base64::engine::general_purpose::STANDARD
+                            .decode(encoded)
+                            .unwrap_or_default(),
+                    )),
                     metadata: None,
+                    filename: data.name.unwrap_or_default(),
+                    media_type: data.content_type,
                 }),
-                (_, DataSource::Uri(uri)) => Some(a2a_types::Part::File {
-                    file: a2a_types::FileContent::WithUri(a2a_types::FileWithUri {
-                        uri: uri.clone(),
-                        mime_type: Some(data.content_type.clone()),
-                        name: data.name.clone(),
-                    }),
+                (_, DataSource::Uri(uri)) => Some(a2a_types::Part {
+                    content: Some(a2a_types::part::Content::Url(uri.clone())),
                     metadata: None,
+                    filename: data.name.unwrap_or_default(),
+                    media_type: data.content_type,
                 }),
             },
             Self::ToolCall(_) | Self::ToolResponse(_) => None,
@@ -321,32 +330,49 @@ impl Data {
 
 impl From<a2a_types::Part> for ContentPart {
     fn from(part: a2a_types::Part) -> Self {
-        match part {
-            a2a_types::Part::Text { text, .. } => Self::Text(text),
-            a2a_types::Part::Data { data, .. } => {
+        let filename = if part.filename.is_empty() {
+            None
+        } else {
+            Some(part.filename)
+        };
+        let media_type = if part.media_type.is_empty() {
+            None
+        } else {
+            Some(part.media_type)
+        };
+
+        match part.content {
+            Some(a2a_types::part::Content::Text(text)) => Self::Text(text),
+            Some(a2a_types::part::Content::Data(data)) => {
+                // Serialize the proto Value back to JSON bytes, then base64-encode.
                 let json_bytes = serde_json::to_vec(&data).unwrap_or_else(|_| b"null".to_vec());
                 let base64_data = base64::engine::general_purpose::STANDARD.encode(json_bytes);
-
                 Self::Data(Data::new_unchecked(
-                    "application/json",
+                    media_type.unwrap_or_else(|| "application/json".to_string()),
                     DataSource::Base64(base64_data),
-                    None,
+                    filename,
                 ))
             }
-            a2a_types::Part::File { file, .. } => {
-                let (source, content_type, name) = match file {
-                    a2a_types::FileContent::WithBytes(f) => {
-                        (DataSource::Base64(f.bytes), f.mime_type, f.name)
-                    }
-                    a2a_types::FileContent::WithUri(f) => {
-                        (DataSource::Uri(f.uri), f.mime_type, f.name)
-                    }
-                };
-                // Default to "application/octet-stream" if MIME type is missing
+            Some(a2a_types::part::Content::Raw(raw)) => {
+                let base64_data = base64::engine::general_purpose::STANDARD.encode(&raw);
                 let content_type =
-                    content_type.unwrap_or_else(|| "application/octet-stream".to_string());
-                Self::Data(Data::new_unchecked(content_type, source, name))
+                    media_type.unwrap_or_else(|| "application/octet-stream".to_string());
+                Self::Data(Data::new_unchecked(
+                    content_type,
+                    DataSource::Base64(base64_data),
+                    filename,
+                ))
             }
+            Some(a2a_types::part::Content::Url(uri)) => {
+                let content_type =
+                    media_type.unwrap_or_else(|| "application/octet-stream".to_string());
+                Self::Data(Data::new_unchecked(
+                    content_type,
+                    DataSource::Uri(uri),
+                    filename,
+                ))
+            }
+            None => Self::Text(String::new()),
         }
     }
 }
