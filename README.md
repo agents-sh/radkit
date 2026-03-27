@@ -992,6 +992,93 @@ The `#[skill]` macro automatically generates:
 
 **Guarantee:** Your Agent Card is always consistent with your skill implementations.
 
+#### 4. Protocol Type Mapping
+
+The framework automatically converts between radkit types and A2A protocol types:
+
+| Radkit Type | A2A Protocol Type |
+|---|---|
+| `Content` | `Message` with `Part[]` |
+| `Artifact::from_json()` | `Artifact` with `DataPart` |
+| `Artifact::from_text()` | `Artifact` with `TextPart` |
+| `OnRequestResult::Completed` | `Task` with `state=TASK_STATE_COMPLETED` |
+| `OnRequestResult::InputRequired` | `Task` with `state=TASK_STATE_INPUT_REQUIRED` |
+
+**Guarantee:** You never handle A2A protocol types directly. The framework ensures correct serialization.
+
+#### 5. Lifecycle Enforcement
+
+```rust
+// ✅ Allowed: Send intermediate updates during execution
+progress.send_update("Working...").await?;
+
+// ✅ Allowed: Send partial artifacts any time
+progress.send_artifact(artifact).await?;
+
+// ✅ Allowed: Return terminal state with final artifacts
+Ok(OnRequestResult::Completed {
+    artifacts: vec![final_artifact],
+    ..
+})
+
+// ❌ Not possible: Can't send "completed" state during execution
+// ❌ Not possible: Can't mark intermediate update as final
+// ❌ Not possible: Can't send invalid task states
+```
+
+**Guarantee:** The type system prevents protocol violations at compile time.
+
+#### How These Guarantees Work
+
+Radkit enforces A2A compliance through several type-level mechanisms:
+
+**1. Unrepresentable Invalid States**
+
+The `OnRequestResult` and `OnInputResult` enums only expose valid A2A states as variants. There's no way to construct an invalid state because the type system doesn't allow it:
+
+```rust
+// ✅ This compiles - valid A2A state
+Ok(OnRequestResult::Completed { message: None, artifacts: vec![] })
+
+// ❌ This doesn't compile - InvalidState doesn't exist
+Ok(OnRequestResult::InvalidState { ... })  // Compilation error!
+```
+
+**2. Restricted Method APIs**
+
+Methods like `progress.send_update()` are internally hardcoded to use `TASK_STATE_WORKING` with no final flag. The API doesn't expose parameters that would allow setting invalid combinations:
+
+```rust
+// Implementation detail (in radkit internals):
+pub async fn send_update(&self, message: impl Into<Content>) -> Result<()> {
+    // Always sends TASK_STATE_WORKING
+    // No way for developers to override this behaviour
+}
+```
+
+**3. Separation of Concerns via Return Types**
+
+Intermediate updates go through `ProgressSender` methods, while final states are only set via return values from `on_request()` and `on_input_received()`. This architectural separation, enforced by Rust's type system, makes it impossible to accidentally mark an intermediate update as final or send a terminal state mid-execution:
+
+```rust
+// During execution: Only intermediate methods available via ProgressSender
+progress.send_update("Working...").await?;  // Always non-final
+
+// At completion: Only way to set final state is via return
+Ok(OnRequestResult::Completed { ... })  // Compiler ensures this ends execution
+```
+
+**4. Compile-Time WASM Compatibility**
+
+The library uses conditional compilation and the `compat` module to ensure WASM portability while maintaining the same API surface. The `?Send` trait bound is conditionally applied based on target:
+
+```rust
+#[cfg_attr(all(target_os = "wasi", target_env = "p1"), async_trait(?Send))]
+#[cfg_attr(not(all(target_os = "wasi", target_env = "p1")), async_trait)]
+```
+
+This means WASM compatibility is verified at compile time — if your agent compiles for native targets, it will compile for WASM without code changes.
+
 ---
 
 ### AgentSkills — File-Based LLM Skills
@@ -1088,93 +1175,6 @@ radkit = { version = "0.0.4", features = ["runtime", "agentskill"] }
 ```
 
 ---
-
-#### 4. Protocol Type Mapping
-
-The framework automatically converts between radkit types and A2A protocol types:
-
-| Radkit Type | A2A Protocol Type |
-|-------------|-------------------|
-| `Content` | `Message` with `Part[]` |
-| `Artifact::from_json()` | `Artifact` with `DataPart` |
-| `Artifact::from_text()` | `Artifact` with `TextPart` |
-| `OnRequestResult::Completed` | `Task` with `state=completed` |
-| `OnRequestResult::InputRequired` | `Task` with `state=input-required` |
-
-**Guarantee:** You never handle A2A protocol types directly. The framework ensures correct serialization.
-
-#### 5. Lifecycle Enforcement
-
-```rust
-// ✅ Allowed: Send intermediate updates during execution
-progress.send_update("Working...").await?;
-
-// ✅ Allowed: Send partial artifacts any time
-progress.send_artifact(artifact).await?;
-
-// ✅ Allowed: Return terminal state with final artifacts
-Ok(OnRequestResult::Completed {
-    artifacts: vec![final_artifact],
-    ..
-})
-
-// ❌ Not possible: Can't send "completed" state during execution
-// ❌ Not possible: Can't mark intermediate update as final
-// ❌ Not possible: Can't send invalid task states
-```
-
-**Guarantee:** The type system prevents protocol violations at compile time.
-
-#### How These Guarantees Work
-
-Radkit enforces A2A compliance through several type-level mechanisms:
-
-**1. Unrepresentable Invalid States**
-
-The `OnRequestResult` and `OnInputResult` enums only expose valid A2A states as variants. There's no way to construct an invalid state because the type system doesn't allow it:
-
-```rust
-// ✅ This compiles - valid A2A state
-Ok(OnRequestResult::Completed { message: None, artifacts: vec![] })
-
-// ❌ This doesn't compile - InvalidState doesn't exist
-Ok(OnRequestResult::InvalidState { ... })  // Compilation error!
-```
-
-**2. Restricted Method APIs**
-
-Methods like `progress.send_update()` are internally hardcoded to use `TaskState::Working` with `final=false`. The API doesn't expose parameters that would allow setting invalid combinations:
-
-```rust
-// Implementation detail (in radkit internals):
-pub async fn send_update(&self, message: impl Into<Content>) -> Result<()> {
-    // Always sends TaskState::Working with final=false
-    // No way for developers to override this behavior
-}
-```
-
-**3. Separation of Concerns via Return Types**
-
-Intermediate updates go through `ProgressSender` methods, while final states are only set via return values from `on_request()` and `on_input_received()`. This architectural separation, enforced by Rust's type system, makes it impossible to accidentally mark an intermediate update as final or send a terminal state mid-execution:
-
-```rust
-// During execution: Only intermediate methods available via ProgressSender
-progress.send_update("Working...").await?;  // Always non-final
-
-// At completion: Only way to set final state is via return
-Ok(OnRequestResult::Completed { ... })  // Compiler ensures this ends execution
-```
-
-**4. Compile-Time WASM Compatibility**
-
-The library uses conditional compilation and the `compat` module to ensure WASM portability while maintaining the same API surface. The `?Send` trait bound is conditionally applied based on target:
-
-```rust
-#[cfg_attr(all(target_os = "wasi", target_env = "p1"), async_trait(?Send))]
-#[cfg_attr(not(all(target_os = "wasi", target_env = "p1")), async_trait)]
-```
-
-This means WASM compatibility is verified at compile time - if your agent compiles for native targets, it will compile for WASM without code changes.
 
 ### Example: Complete A2A Agent
 
