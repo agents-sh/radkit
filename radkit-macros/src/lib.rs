@@ -1,11 +1,13 @@
 //! Procedural macros for the radkit agent framework.
 //!
-//! This crate provides attribute macros for defining A2A-compliant skills and tools.
+//! This crate provides attribute macros for defining A2A-compliant skills and tools,
+//! and the `include_skill!` function macro for embedding `AgentSkills` at compile time.
 
 #![deny(unsafe_code, unreachable_patterns, unused_must_use)]
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
 #![allow(clippy::module_name_repetitions)] // Common pattern in proc macro crates
 
+mod agentskill;
 mod skill;
 mod tool;
 mod validation;
@@ -162,4 +164,43 @@ pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
     let item = proc_macro2::TokenStream::from(item);
 
     tool::generate_tool_impl(args, item).into()
+}
+
+/// Embeds an `AgentSkill` directory into the binary at compile time.
+///
+/// Reads the `SKILL.md` file from the given path (relative to the crate root),
+/// validates its frontmatter structure, and returns an [`AgentSkillDef`] value
+/// that can be passed to [`AgentBuilder::with_skill_def`].
+///
+/// Because `include_str!` is used internally, the `SKILL.md` content is compiled
+/// into the binary — no filesystem I/O happens at runtime, and this works on
+/// WASM targets.
+///
+/// [`AgentSkillDef`]: radkit::agent::AgentSkillDef
+/// [`AgentBuilder::with_skill_def`]: radkit::agent::AgentBuilder::with_skill_def
+///
+/// # Panics (at startup, not compile time)
+///
+/// If the embedded SKILL.md fails full validation (e.g. the `name` field is
+/// invalid), the process will panic at startup with a clear message.
+///
+/// # Compile errors
+///
+/// - `SKILL.md` does not exist at the given path
+/// - `SKILL.md` does not begin with `---`
+/// - `SKILL.md` frontmatter is not closed with `---`
+///
+/// # Examples
+///
+/// ```ignore
+/// use radkit::{agent::Agent, include_skill};
+///
+/// let agent = Agent::builder()
+///     .with_name("My Agent")
+///     .with_skill_def(include_skill!("./skills/pdf-processing"))
+///     .build();
+/// ```
+#[proc_macro]
+pub fn include_skill(input: TokenStream) -> TokenStream {
+    agentskill::generate_include_skill(input)
 }

@@ -24,7 +24,7 @@ use axum::{
     Json,
 };
 use futures::Stream;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -241,25 +241,25 @@ pub(crate) fn build_agent_card(runtime: &Runtime, agent: &AgentDefinition) -> v1
                     .metadata()
                     .tags
                     .iter()
-                    .map(|tag| (*tag).to_string())
+                    .map(|tag| (*tag).clone())
                     .collect(),
                 examples: skill
                     .metadata()
                     .examples
                     .iter()
-                    .map(|example| (*example).to_string())
+                    .map(|example| (*example).clone())
                     .collect(),
                 input_modes: skill
                     .metadata()
                     .input_modes
                     .iter()
-                    .map(|mode| (*mode).to_string())
+                    .map(|mode| (*mode).clone())
                     .collect(),
                 output_modes: skill
                     .metadata()
                     .output_modes
                     .iter()
-                    .map(|mode| (*mode).to_string())
+                    .map(|mode| (*mode).clone())
                     .collect(),
                 security_requirements: Vec::new(),
             })
@@ -1202,16 +1202,6 @@ mod tests {
 
         struct ImmediateSkill;
 
-        static IMMEDIATE_METADATA: SkillMetadata = SkillMetadata::new(
-            "immediate-skill",
-            "Immediate Skill",
-            "Completes immediately",
-            &[],
-            &[],
-            &[],
-            &[],
-        );
-
         #[cfg_attr(
             all(target_os = "wasi", target_env = "p1"),
             async_trait::async_trait(?Send)
@@ -1246,15 +1236,23 @@ mod tests {
         }
 
         impl RegisteredSkill for ImmediateSkill {
-            fn metadata() -> &'static SkillMetadata {
-                &IMMEDIATE_METADATA
+            fn metadata() -> std::sync::Arc<SkillMetadata> {
+                std::sync::Arc::new(SkillMetadata::new(
+                    "immediate-skill",
+                    "Immediate Skill",
+                    "Completes immediately",
+                    &[],
+                    &[],
+                    &[],
+                    &[],
+                ))
             }
         }
 
         #[tokio::test(flavor = "current_thread")]
         async fn agent_card_handler_returns_v1_agent_card() {
             let llm =
-                FakeLlm::with_responses("fake-llm", [negotiation_response(IMMEDIATE_METADATA.id)]);
+                FakeLlm::with_responses("fake-llm", [negotiation_response("immediate-skill")]);
             let agent = Agent::builder()
                 .with_version("1.0.0")
                 .with_name("Test Agent")
@@ -1288,7 +1286,7 @@ mod tests {
         #[tokio::test(flavor = "current_thread")]
         async fn json_rpc_handler_accepts_v1_send_message() {
             let llm =
-                FakeLlm::with_responses("fake-llm", [negotiation_response(IMMEDIATE_METADATA.id)]);
+                FakeLlm::with_responses("fake-llm", [negotiation_response("immediate-skill")]);
             let agent = Agent::builder()
                 .with_version("1.0.0")
                 .with_name("Test Agent")
@@ -1339,7 +1337,7 @@ mod tests {
         #[tokio::test(flavor = "current_thread")]
         async fn message_send_handler_returns_v1_task() {
             let llm =
-                FakeLlm::with_responses("fake-llm", [negotiation_response(IMMEDIATE_METADATA.id)]);
+                FakeLlm::with_responses("fake-llm", [negotiation_response("immediate-skill")]);
             let agent = Agent::builder()
                 .with_version("1.0.0")
                 .with_name("Test Agent")
@@ -1383,7 +1381,7 @@ mod tests {
         #[tokio::test(flavor = "current_thread")]
         async fn message_stream_handler_emits_terminal_task_event() {
             let llm =
-                FakeLlm::with_responses("fake-llm", [negotiation_response(IMMEDIATE_METADATA.id)]);
+                FakeLlm::with_responses("fake-llm", [negotiation_response("immediate-skill")]);
             let agent = Agent::builder()
                 .with_version("1.0.0")
                 .with_name("Test Agent")
@@ -1456,7 +1454,7 @@ mod tests {
         #[tokio::test(flavor = "current_thread")]
         async fn subscribe_task_handler_returns_not_found_for_missing_task() {
             let llm =
-                FakeLlm::with_responses("fake-llm", [negotiation_response(IMMEDIATE_METADATA.id)]);
+                FakeLlm::with_responses("fake-llm", [negotiation_response("immediate-skill")]);
             let agent = Agent::builder()
                 .with_version("1.0.0")
                 .with_name("Test Agent")

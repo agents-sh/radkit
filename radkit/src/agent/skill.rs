@@ -217,47 +217,82 @@ impl SkillSlot {
 }
 
 /// Metadata describing a skill's public surface.
+///
+/// For Rust skills annotated with `#[skill]`, this is generated at compile
+/// time by the macro. For `AgentSkills` loaded from a `SKILL.md` file, this
+/// is populated from the frontmatter at startup.
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillMetadata {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub description: &'static str,
-    #[serde(default)]
-    pub tags: &'static [&'static str],
-    #[serde(default)]
-    pub examples: &'static [&'static str],
-    #[serde(default)]
-    pub input_modes: &'static [&'static str],
-    #[serde(default)]
-    pub output_modes: &'static [&'static str],
+    /// Unique identifier for the skill. Used for routing and task association.
+    pub id: String,
+    /// Human-readable display name.
+    pub name: String,
+    /// Description of what the skill does and when to use it.
+    /// Shown to the negotiator LLM for routing decisions.
+    pub description: String,
+    /// Optional keyword tags.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Example prompts that trigger this skill.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<String>,
+    /// Supported input MIME types.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_modes: Vec<String>,
+    /// Supported output MIME types.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output_modes: Vec<String>,
+    /// Full instruction body from `SKILL.md` (`AgentSkills` only).
+    /// `None` for programmatic Rust skills.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    /// License information (`AgentSkills` only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    /// Compatibility notes (`AgentSkills` only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<String>,
+    /// Pre-approved tool names from `allowed-tools` frontmatter (`AgentSkills` only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_tools: Vec<String>,
 }
 
 impl SkillMetadata {
+    /// Create metadata for a programmatic Rust skill.
+    ///
+    /// Used by the `#[skill]` macro and in tests.
     #[must_use]
-    pub const fn new(
-        id: &'static str,
-        name: &'static str,
-        description: &'static str,
-        tags: &'static [&'static str],
-        examples: &'static [&'static str],
-        input_modes: &'static [&'static str],
-        output_modes: &'static [&'static str],
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        tags: &[&str],
+        examples: &[&str],
+        input_modes: &[&str],
+        output_modes: &[&str],
     ) -> Self {
         Self {
-            id,
-            name,
-            description,
-            tags,
-            examples,
-            input_modes,
-            output_modes,
+            id: id.into(),
+            name: name.into(),
+            description: description.into(),
+            tags: tags.iter().map(|s| (*s).to_string()).collect(),
+            examples: examples.iter().map(|s| (*s).to_string()).collect(),
+            input_modes: input_modes.iter().map(|s| (*s).to_string()).collect(),
+            output_modes: output_modes.iter().map(|s| (*s).to_string()).collect(),
+            instructions: None,
+            license: None,
+            compatibility: None,
+            allowed_tools: Vec::new(),
         }
     }
 }
 
 /// Trait implemented by skills that expose metadata to the agent builder.
 pub trait RegisteredSkill: SkillHandler + Sized {
-    fn metadata() -> &'static SkillMetadata;
+    /// Returns shared metadata for this skill type.
+    ///
+    /// Called once per `with_skill()` call at agent builder time.
+    fn metadata() -> std::sync::Arc<SkillMetadata>;
 }
 
 /// Result of skill handler's `on_request` method.
@@ -449,6 +484,49 @@ pub trait SkillHandler: MaybeSend + MaybeSync {
     }
 }
 
+/// Structured output contract used by [`LlmSkillHandler`] to drive
+/// LLM-backed `AgentSkills`.
+///
+/// The LLM must respond with one of these three variants when executing
+/// an `AgentSkill`. `tryparse` handles fuzzy matching so minor formatting
+/// deviations (different casing, extra whitespace) are tolerated.
+///
+/// # Examples
+///
+/// ```ignore
+/// use radkit::agent::WorkStatus;
+///
+/// // Skill finished
+/// let done = WorkStatus::Complete {
+///     message: "Here is your summary: ...".to_string(),
+/// };
+///
+/// // Skill needs more info
+/// let ask = WorkStatus::NeedsInput {
+///     message: "Which language should I translate to?".to_string(),
+/// };
+/// ```
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "macros", derive(crate::macros::LLMOutput))]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum WorkStatus {
+    /// The skill completed successfully. Return `message` to the user.
+    Complete {
+        /// The final response to present to the user.
+        message: String,
+    },
+    /// The skill needs additional input before it can continue.
+    NeedsInput {
+        /// The question or prompt to present to the user.
+        message: String,
+    },
+    /// The skill encountered an unrecoverable error.
+    Failed {
+        /// Human-readable explanation of what went wrong.
+        reason: String,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,9 +545,9 @@ mod tests {
 
         let data_part = match &parts[0] {
             ContentPart::Data(data) => data,
-            other @ ContentPart::Text(_)
-            | other @ ContentPart::ToolCall(_)
-            | other @ ContentPart::ToolResponse(_) => panic!("expected data part, found {other:?}"),
+            other @ (ContentPart::Text(_)
+            | ContentPart::ToolCall(_)
+            | ContentPart::ToolResponse(_)) => panic!("expected data part, found {other:?}"),
         };
 
         assert_eq!(data_part.content_type, "application/json");
@@ -494,9 +572,9 @@ mod tests {
 
         let data_part = match &artifact.content().parts()[0] {
             ContentPart::Data(data) => data,
-            other @ ContentPart::Text(_)
-            | other @ ContentPart::ToolCall(_)
-            | other @ ContentPart::ToolResponse(_) => panic!("expected data part, found {other:?}"),
+            other @ (ContentPart::Text(_)
+            | ContentPart::ToolCall(_)
+            | ContentPart::ToolResponse(_)) => panic!("expected data part, found {other:?}"),
         };
 
         assert_eq!(data_part.content_type, "image/png");
@@ -524,5 +602,66 @@ mod tests {
             .deserialize()
             .expect("slot should deserialize successfully");
         assert_eq!(decoded, SlotState::Confirm("example".into()));
+    }
+
+    // ── WorkStatus tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn work_status_complete_serializes_correctly() {
+        let status = WorkStatus::Complete {
+            message: "All done!".to_string(),
+        };
+        let json = serde_json::to_value(&status).expect("serialize");
+        assert_eq!(json["status"], "complete");
+        assert_eq!(json["message"], "All done!");
+    }
+
+    #[test]
+    fn work_status_needs_input_serializes_correctly() {
+        let status = WorkStatus::NeedsInput {
+            message: "Which language?".to_string(),
+        };
+        let json = serde_json::to_value(&status).expect("serialize");
+        assert_eq!(json["status"], "needs_input");
+        assert_eq!(json["message"], "Which language?");
+    }
+
+    #[test]
+    fn work_status_failed_serializes_correctly() {
+        let status = WorkStatus::Failed {
+            reason: "Something went wrong".to_string(),
+        };
+        let json = serde_json::to_value(&status).expect("serialize");
+        assert_eq!(json["status"], "failed");
+        assert_eq!(json["reason"], "Something went wrong");
+    }
+
+    #[test]
+    fn work_status_round_trips_through_serde() {
+        let original = WorkStatus::Complete {
+            message: "Done".to_string(),
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        let decoded: WorkStatus = serde_json::from_str(&json).expect("deserialize");
+        match decoded {
+            WorkStatus::Complete { message } => assert_eq!(message, "Done"),
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
+    fn work_status_deserializes_all_variants() {
+        let complete: WorkStatus =
+            serde_json::from_str(r#"{"status":"complete","message":"ok"}"#).expect("complete");
+        assert!(matches!(complete, WorkStatus::Complete { .. }));
+
+        let needs_input: WorkStatus =
+            serde_json::from_str(r#"{"status":"needs_input","message":"ask"}"#)
+                .expect("needs_input");
+        assert!(matches!(needs_input, WorkStatus::NeedsInput { .. }));
+
+        let failed: WorkStatus =
+            serde_json::from_str(r#"{"status":"failed","reason":"oops"}"#).expect("failed");
+        assert!(matches!(failed, WorkStatus::Failed { .. }));
     }
 }

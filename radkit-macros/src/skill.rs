@@ -146,13 +146,7 @@ pub fn generate_skill_impl(args: SkillArgs, item: TokenStream) -> TokenStream {
     };
     let struct_name = &struct_item.ident;
 
-    // Generate metadata constant name (UPPERCASED_METADATA)
-    let metadata_name = syn::Ident::new(
-        &format!("{}_METADATA", struct_name.to_string().to_uppercase()),
-        struct_name.span(),
-    );
-
-    // Convert Rust strings to token streams for static arrays
+    // Convert Rust strings to token streams
     let id = &args.id;
     let name = &args.name;
     let description = &args.description;
@@ -166,19 +160,17 @@ pub fn generate_skill_impl(args: SkillArgs, item: TokenStream) -> TokenStream {
     quote! {
         #item
 
-        static #metadata_name: ::radkit::agent::SkillMetadata = ::radkit::agent::SkillMetadata::new(
-            #id,
-            #name,
-            #description,
-            &[#(#tags),*],
-            &[#(#examples),*],
-            &[#(#input_modes),*],
-            &[#(#output_modes),*],
-        );
-
         impl ::radkit::agent::RegisteredSkill for #struct_name {
-            fn metadata() -> &'static ::radkit::agent::SkillMetadata {
-                &#metadata_name
+            fn metadata() -> ::std::sync::Arc<::radkit::agent::SkillMetadata> {
+                ::std::sync::Arc::new(::radkit::agent::SkillMetadata::new(
+                    #id,
+                    #name,
+                    #description,
+                    &[#(#tags),*],
+                    &[#(#examples),*],
+                    &[#(#input_modes),*],
+                    &[#(#output_modes),*],
+                ))
             }
         }
     }

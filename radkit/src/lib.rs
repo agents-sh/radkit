@@ -180,3 +180,24 @@ pub use tryparse as __private_tryparse;
 /// let data: UserData = tryparse::parse_llm(llm_response)?;
 /// ```
 pub use tryparse;
+
+/// Embeds an `AgentSkill` directory into the binary at compile time.
+///
+/// Reads `SKILL.md` from the given path (relative to the crate root),
+/// validates the frontmatter, and returns an [`AgentSkillDef`] value
+/// ready to pass to [`AgentBuilder::with_skill_def`].
+///
+/// [`AgentSkillDef`]: agent::AgentSkillDef
+/// [`AgentBuilder::with_skill_def`]: agent::AgentBuilder::with_skill_def
+///
+/// # Examples
+///
+/// ```ignore
+/// use radkit::{agent::Agent, include_skill};
+///
+/// let agent = Agent::builder()
+///     .with_skill_def(include_skill!("./skills/pdf-processing"))
+///     .build();
+/// ```
+#[cfg(feature = "macros")]
+pub use radkit_macros::include_skill;

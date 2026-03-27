@@ -945,8 +945,7 @@ impl A2AClient {
 
         // Validate that the response ID matches the request ID per JSON-RPC §5.
         if let JsonRpcResponse::Success {
-            id: Some(resp_id),
-            ..
+            id: Some(resp_id), ..
         } = &json_response
             && resp_id != &request_id
         {

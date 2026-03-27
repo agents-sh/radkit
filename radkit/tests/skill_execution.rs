@@ -11,16 +11,6 @@ use radkit::test_support::FakeLlm;
 // A test skill for verifying lifecycle behavior.
 struct LifecycleSkill;
 
-static LIFECYCLE_METADATA: SkillMetadata = SkillMetadata::new(
-    "lifecycle_skill",
-    "Lifecycle Skill",
-    "A skill for testing the execution lifecycle.",
-    &[],
-    &[],
-    &[],
-    &[],
-);
-
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
 enum LifecycleSlot {
     AwaitingInput,
@@ -74,8 +64,16 @@ impl SkillHandler for LifecycleSkill {
 }
 
 impl RegisteredSkill for LifecycleSkill {
-    fn metadata() -> &'static SkillMetadata {
-        &LIFECYCLE_METADATA
+    fn metadata() -> std::sync::Arc<SkillMetadata> {
+        std::sync::Arc::new(SkillMetadata::new(
+            "lifecycle_skill",
+            "Lifecycle Skill",
+            "A skill for testing the execution lifecycle.",
+            &[],
+            &[],
+            &[],
+            &[],
+        ))
     }
 }
 
@@ -177,16 +175,6 @@ async fn test_skill_lifecycle_with_failure() {
 // Test skill that completes immediately without requiring input
 struct ImmediateSkill;
 
-static IMMEDIATE_METADATA: SkillMetadata = SkillMetadata::new(
-    "immediate_skill",
-    "Immediate Skill",
-    "A skill that completes immediately.",
-    &[],
-    &[],
-    &[],
-    &[],
-);
-
 #[cfg_attr(all(target_os = "wasi", target_env = "p1"), async_trait::async_trait(?Send))]
 #[cfg_attr(
     not(all(target_os = "wasi", target_env = "p1")),
@@ -209,8 +197,16 @@ impl SkillHandler for ImmediateSkill {
 }
 
 impl RegisteredSkill for ImmediateSkill {
-    fn metadata() -> &'static SkillMetadata {
-        &IMMEDIATE_METADATA
+    fn metadata() -> std::sync::Arc<SkillMetadata> {
+        std::sync::Arc::new(SkillMetadata::new(
+            "immediate_skill",
+            "Immediate Skill",
+            "A skill that completes immediately.",
+            &[],
+            &[],
+            &[],
+            &[],
+        ))
     }
 }
 
@@ -247,16 +243,6 @@ async fn test_immediate_completion_skill() {
 // Test skill that rejects requests
 struct RejectingSkill;
 
-static REJECTING_METADATA: SkillMetadata = SkillMetadata::new(
-    "rejecting_skill",
-    "Rejecting Skill",
-    "A skill that rejects certain requests.",
-    &[],
-    &[],
-    &[],
-    &[],
-);
-
 #[cfg_attr(all(target_os = "wasi", target_env = "p1"), async_trait::async_trait(?Send))]
 #[cfg_attr(
     not(all(target_os = "wasi", target_env = "p1")),
@@ -285,8 +271,16 @@ impl SkillHandler for RejectingSkill {
 }
 
 impl RegisteredSkill for RejectingSkill {
-    fn metadata() -> &'static SkillMetadata {
-        &REJECTING_METADATA
+    fn metadata() -> std::sync::Arc<SkillMetadata> {
+        std::sync::Arc::new(SkillMetadata::new(
+            "rejecting_skill",
+            "Rejecting Skill",
+            "A skill that rejects certain requests.",
+            &[],
+            &[],
+            &[],
+            &[],
+        ))
     }
 }
 
@@ -347,16 +341,6 @@ async fn test_rejecting_skill() {
 // Test skill with multi-round input requests
 struct MultiRoundSkill;
 
-static MULTI_ROUND_METADATA: SkillMetadata = SkillMetadata::new(
-    "multi_round_skill",
-    "Multi-Round Skill",
-    "A skill that requires multiple rounds of input.",
-    &[],
-    &[],
-    &[],
-    &[],
-);
-
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
 enum MultiRoundSlot {
     AwaitingName,
@@ -411,8 +395,16 @@ impl SkillHandler for MultiRoundSkill {
 }
 
 impl RegisteredSkill for MultiRoundSkill {
-    fn metadata() -> &'static SkillMetadata {
-        &MULTI_ROUND_METADATA
+    fn metadata() -> std::sync::Arc<SkillMetadata> {
+        std::sync::Arc::new(SkillMetadata::new(
+            "multi_round_skill",
+            "Multi-Round Skill",
+            "A skill that requires multiple rounds of input.",
+            &[],
+            &[],
+            &[],
+            &[],
+        ))
     }
 }
 

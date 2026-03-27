@@ -64,6 +64,7 @@ schemars = "1"
 Radkit ships optional capabilities that you can opt into per target:
 
 - `runtime`: Enables the native runtime handle, HTTP server, tracing, and other dependencies required to run A2A-compliant agents locally.
+- `agentskill`: Enables `AgentSkillDef`, `include_skill!`, and `with_skill_dir` for loading skills from `SKILL.md` files. Included in the `macros` feature by default.
 - `dev-ui`: Builds on top of `runtime` and serves an interactive UI (native-only) where you can trigger tasks, and inspect streaming output.
 - `task-store-sqlite`: Enables a native SQLite-backed `TaskStore` for persistent task, event, and state storage.
 
@@ -990,6 +991,103 @@ The `#[skill]` macro automatically generates:
 - Proper skill discovery metadata
 
 **Guarantee:** Your Agent Card is always consistent with your skill implementations.
+
+---
+
+### AgentSkills — File-Based LLM Skills
+
+In addition to programmatic Rust skills, radkit supports **AgentSkills** — skills defined entirely in a `SKILL.md` file, with no Rust code required. The LLM reads the instructions and drives the task.
+
+AgentSkills follow the [AgentSkills specification](https://agentskills.io/specification). A skill is a directory containing a `SKILL.md` file:
+
+```
+skills/
+└── text-summariser/
+    └── SKILL.md
+```
+
+The `SKILL.md` file has YAML frontmatter followed by Markdown instructions:
+
+```markdown
+---
+name: text-summariser
+description: Summarises text. Use when the user asks to summarise or condense text.
+license: MIT
+---
+
+You are a precise text summariser.
+
+## Instructions
+
+1. Read the provided text carefully.
+2. Write a concise summary capturing the essential information.
+
+## Output format
+
+Respond with a JSON object:
+{ "status": "complete", "message": "Your summary here." }
+
+If no text has been provided yet:
+{ "status": "needs_input", "message": "Please provide the text to summarise." }
+```
+
+#### Registering AgentSkills
+
+There are two ways to register an AgentSkill:
+
+**Compile-time embedding** — `SKILL.md` is baked into the binary (like `include_str!`). No filesystem I/O at startup. Works on WASM.
+
+```rust
+use radkit::{agent::Agent, include_skill};
+
+let agent = Agent::builder()
+    .with_name("Text Agent")
+    .with_skill_def(include_skill!("./skills/text-summariser"))
+    .build();
+```
+
+**Runtime loading** — `SKILL.md` is read from disk at startup. Useful when you want to update skills without recompiling.
+
+```rust
+let agent = Agent::builder()
+    .with_name("Text Agent")
+    .with_skill_dir("./skills/text-summariser")?
+    .build();
+```
+
+Both produce identical `SkillRegistration`s at runtime. You can mix programmatic Rust skills and AgentSkills freely:
+
+```rust
+Agent::builder()
+    .with_name("My Agent")
+    .with_skill(MyRustSkill)                                        // Rust skill
+    .with_skill_def(include_skill!("./skills/text-summariser"))     // compile-time AgentSkill
+    .with_skill_dir("./skills/translate")?                          // runtime AgentSkill
+    .build()
+```
+
+#### Multi-turn AgentSkills
+
+AgentSkills support multi-turn conversations out of the box. If the LLM responds with `"status": "needs_input"`, the task enters `InputRequired` state and the full conversation thread is preserved in the slot. When the user replies, the thread is replayed and the LLM continues from where it left off.
+
+The `WorkStatus` enum drives this:
+
+| LLM responds with | Task state |
+|---|---|
+| `{ "status": "complete", "message": "..." }` | `Completed` |
+| `{ "status": "needs_input", "message": "..." }` | `InputRequired` (multi-turn continues) |
+| `{ "status": "failed", "reason": "..." }` | `Failed` |
+
+#### Feature flag
+
+AgentSkill support requires the `agentskill` feature (included in `macros` by default):
+
+```toml
+[dependencies]
+radkit = { version = "0.0.4", features = ["runtime", "agentskill"] }
+```
+
+---
 
 #### 4. Protocol Type Mapping
 

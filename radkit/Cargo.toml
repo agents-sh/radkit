@@ -35,7 +35,9 @@ openapi = ["dep:openapiv3", "dep:serde_yaml", "dep:url"]
 mcp = ["dep:rmcp", "dep:tracing"]
 # Enables test utilities (FakeLlm, RecordingTool) for downstream testing
 test-support = []
-macros = ["dep:radkit-macros", "dep:tryparse-derive"]
+macros = ["dep:radkit-macros", "dep:tryparse-derive", "agentskill"]
+# Enables AgentSkill support (SKILL.md loading).
+agentskill = ["dep:serde_yaml"]
 
 [dependencies]
 a2a-types = { path = "../a2a-types", version = "0.2.0" }
@@ -61,6 +63,7 @@ async-stream = "0.3.6"
 openapiv3 = { version = "2.0", optional = true }
 serde_yaml = { version = "0.9", optional = true }
 url = { version = "2.5", optional = true }
+# agentskill feature uses serde_yaml for SKILL.md frontmatter parsing
 
 [target.'cfg(not(all(target_os = "wasi", target_env = "p1")))'.dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
@@ -97,3 +100,8 @@ wasm-bindgen-test = "0.3"
 [[example]]
 name = "hr_agent"
 path = "../examples/hr_agent/agent.rs"
+
+[[example]]
+name = "agentskill_agent"
+path = "../examples/agentskill_agent/agent.rs"
+required-features = ["agentskill", "dev-ui"]

@@ -101,6 +101,14 @@ where
         LlmWorkerBuilder::new(model)
     }
 
+    /// Creates a new builder from an already-`Arc`-wrapped LLM.
+    ///
+    /// Use this when you have a shared `Arc<dyn BaseLlm>` from the runtime
+    /// and want to avoid re-wrapping it.
+    pub fn builder_shared(model: Arc<dyn BaseLlm>) -> LlmWorkerBuilder<T> {
+        LlmWorkerBuilder::from_shared(model)
+    }
+
     /// Runs the worker on the given input thread.
     ///
     /// This method executes the LLM with the provided thread, handling any
@@ -441,6 +449,21 @@ where
     pub fn new(model: impl BaseLlm + 'static) -> Self {
         Self {
             model: Arc::new(model) as Arc<dyn BaseLlm>,
+            system_instructions: None,
+            tools: Vec::new(),
+            toolsets: Vec::new(),
+            max_iterations: DEFAULT_MAX_TOOL_ITERATIONS,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Creates a builder from an already-`Arc`-wrapped LLM.
+    ///
+    /// Use this when you have a shared `Arc<dyn BaseLlm>` (e.g. from the
+    /// runtime) and don't want to wrap it again.
+    pub fn from_shared(model: Arc<dyn BaseLlm>) -> Self {
+        Self {
+            model,
             system_instructions: None,
             tools: Vec::new(),
             toolsets: Vec::new(),

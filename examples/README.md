@@ -113,6 +113,24 @@ Shows how to:
 
 ---
 
+### 6. AgentSkill Agent (`agentskill_agent/agent.rs`)
+
+**Demonstrates:** Registering LLM-driven skills defined in `SKILL.md` files — no Rust skill code required.
+
+```bash
+cargo run --example agentskill_agent --features agentskill
+```
+
+Shows how to:
+- Write a skill as a `SKILL.md` file following the [AgentSkills spec](https://agentskills.io/specification)
+- Embed a skill at compile time with `include_skill!` (no I/O at startup)
+- Load a skill from the filesystem at runtime with `with_skill_dir`
+- Mix file-based AgentSkills with programmatic Rust skills
+
+**Key concepts:** `AgentSkillDef`, `include_skill!`, `with_skill_dir`, `SKILL.md`, multi-turn AgentSkills
+
+---
+
 ## Example Categories
 
 ### For Beginners
@@ -128,6 +146,7 @@ Explore more complex patterns:
 ### For Advanced Users
 Tackle sophisticated workflows:
 5. `stateful_shopping_cart.rs` - Build stateful agents
+6. `agentskill_agent/` - Define skills in SKILL.md files
 
 ---
 

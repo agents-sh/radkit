@@ -1156,16 +1156,6 @@ mod tests {
 
     struct SimpleSkill;
 
-    static SIMPLE_METADATA: SkillMetadata = SkillMetadata::new(
-        "simple-skill",
-        "Simple Skill",
-        "Completes immediately",
-        &[],
-        &[],
-        &[],
-        &[],
-    );
-
     #[cfg_attr(
         all(target_os = "wasi", target_env = "p1"),
         async_trait::async_trait(?Send)
@@ -1190,22 +1180,20 @@ mod tests {
     }
 
     impl RegisteredSkill for SimpleSkill {
-        fn metadata() -> &'static SkillMetadata {
-            &SIMPLE_METADATA
+        fn metadata() -> std::sync::Arc<SkillMetadata> {
+            std::sync::Arc::new(SkillMetadata::new(
+                "simple-skill",
+                "Simple Skill",
+                "Completes immediately",
+                &[],
+                &[],
+                &[],
+                &[],
+            ))
         }
     }
 
     struct MultiTurnSkill;
-
-    static MULTI_METADATA: SkillMetadata = SkillMetadata::new(
-        "multi-skill",
-        "Multi-turn Skill",
-        "Requests additional input",
-        &[],
-        &[],
-        &[],
-        &[],
-    );
 
     #[cfg_attr(
         all(target_os = "wasi", target_env = "p1"),
@@ -1246,8 +1234,16 @@ mod tests {
     }
 
     impl RegisteredSkill for MultiTurnSkill {
-        fn metadata() -> &'static SkillMetadata {
-            &MULTI_METADATA
+        fn metadata() -> std::sync::Arc<SkillMetadata> {
+            std::sync::Arc::new(SkillMetadata::new(
+                "multi-skill",
+                "Multi-turn Skill",
+                "Requests additional input",
+                &[],
+                &[],
+                &[],
+                &[],
+            ))
         }
     }
 
@@ -1255,10 +1251,7 @@ mod tests {
     async fn new_context_creates_task_and_records_events() {
         let llm = FakeLlm::with_responses(
             "negotiator",
-            [negotiation_response(
-                SIMPLE_METADATA.id,
-                "Using simple skill",
-            )],
+            [negotiation_response("simple-skill", "Using simple skill")],
         );
         let agent = Agent::builder()
             .with_name("Agent")
@@ -1305,7 +1298,7 @@ mod tests {
     async fn continuation_flow_updates_task() {
         let llm = FakeLlm::with_responses(
             "negotiator",
-            [negotiation_response(MULTI_METADATA.id, "Need more info")],
+            [negotiation_response("multi-skill", "Need more info")],
         );
         let agent = Agent::builder()
             .with_name("Agent")

@@ -196,13 +196,13 @@ mod native {
             Ok(self
                 .store
                 .get_mut(&ns)
-                .is_some_and(|mut ns_store| ns_store.remove(id).is_some()))
+                .is_some_and(|ns_store| ns_store.remove(id).is_some()))
         }
 
         async fn delete_batch(&self, auth_ctx: &AuthContext, ids: &[String]) -> AgentResult<usize> {
             let ns = Self::namespace(auth_ctx);
             let mut count = 0;
-            if let Some(mut ns_store) = self.store.get_mut(&ns) {
+            if let Some(ns_store) = self.store.get_mut(&ns) {
                 for id in ids {
                     if ns_store.remove(id).is_some() {
                         count += 1;

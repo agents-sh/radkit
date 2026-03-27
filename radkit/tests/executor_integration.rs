@@ -66,16 +66,6 @@ mod tests {
 
     struct ImmediateSkill;
 
-    static IMMEDIATE_METADATA: SkillMetadata = SkillMetadata::new(
-        "immediate",
-        "Immediate Skill",
-        "Completes immediately",
-        &[],
-        &[],
-        &[],
-        &[],
-    );
-
     #[cfg_attr(
         all(target_os = "wasi", target_env = "p1"),
         async_trait::async_trait(?Send)
@@ -110,8 +100,16 @@ mod tests {
     }
 
     impl RegisteredSkill for ImmediateSkill {
-        fn metadata() -> &'static SkillMetadata {
-            &IMMEDIATE_METADATA
+        fn metadata() -> std::sync::Arc<SkillMetadata> {
+            std::sync::Arc::new(SkillMetadata::new(
+                "immediate",
+                "Immediate Skill",
+                "Completes immediately",
+                &[],
+                &[],
+                &[],
+                &[],
+            ))
         }
     }
 
@@ -151,16 +149,6 @@ mod tests {
     }
 
     struct GreetingSkill;
-
-    static GREETING_METADATA: SkillMetadata = SkillMetadata::new(
-        "greeting",
-        "Greeting Skill",
-        "Greets user by name",
-        &[],
-        &[],
-        &[],
-        &[],
-    );
 
     #[cfg_attr(
         all(target_os = "wasi", target_env = "p1"),
@@ -205,8 +193,16 @@ mod tests {
     }
 
     impl RegisteredSkill for GreetingSkill {
-        fn metadata() -> &'static SkillMetadata {
-            &GREETING_METADATA
+        fn metadata() -> std::sync::Arc<SkillMetadata> {
+            std::sync::Arc::new(SkillMetadata::new(
+                "greeting",
+                "Greeting Skill",
+                "Greets user by name",
+                &[],
+                &[],
+                &[],
+                &[],
+            ))
         }
     }
 
@@ -269,16 +265,6 @@ mod tests {
 
     struct FailingSkill;
 
-    static FAILING_METADATA: SkillMetadata = SkillMetadata::new(
-        "failing",
-        "Failing Skill",
-        "Always fails",
-        &[],
-        &[],
-        &[],
-        &[],
-    );
-
     #[cfg_attr(
         all(target_os = "wasi", target_env = "p1"),
         async_trait::async_trait(?Send)
@@ -313,8 +299,16 @@ mod tests {
     }
 
     impl RegisteredSkill for FailingSkill {
-        fn metadata() -> &'static SkillMetadata {
-            &FAILING_METADATA
+        fn metadata() -> std::sync::Arc<SkillMetadata> {
+            std::sync::Arc::new(SkillMetadata::new(
+                "failing",
+                "Failing Skill",
+                "Always fails",
+                &[],
+                &[],
+                &[],
+                &[],
+            ))
         }
     }
 

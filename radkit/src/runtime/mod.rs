@@ -170,6 +170,9 @@ pub struct Runtime {
 #[cfg(feature = "runtime")]
 pub struct RuntimeBuilder {
     agent: AgentDefinition,
+    /// `AgentSkillDefs` waiting for the LLM to be injected.
+    #[cfg(feature = "agentskill")]
+    pending_skill_defs: Vec<crate::agent::agentskill::AgentSkillDef>,
     auth_service: Arc<dyn AuthService>,
     task_store: Arc<dyn TaskStore>,
     memory_service: Arc<dyn MemoryService>,
@@ -181,8 +184,32 @@ pub struct RuntimeBuilder {
 #[cfg(feature = "runtime")]
 impl Runtime {
     /// Creates a builder for the provided agent and LLM provider.
-    pub fn builder(agent: AgentDefinition, llm: impl BaseLlm + 'static) -> RuntimeBuilder {
-        RuntimeBuilder::new(agent, llm)
+    ///
+    /// Accepts either an [`AgentDefinition`] (from `Agent::builder().build()`)
+    /// or an [`AgentBuilder`] directly. Using `AgentBuilder` is preferred when
+    /// you have registered `AgentSkills` via `with_skill_def` or `with_skill_dir`,
+    /// because the LLM is injected into those handlers during `RuntimeBuilder::build()`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // With programmatic skills only
+    /// Runtime::builder(Agent::builder().with_skill(MySkill).build(), llm)
+    ///     .build()
+    ///
+    /// // With AgentSkills — pass the AgentBuilder directly
+    /// Runtime::builder(
+    ///     Agent::builder()
+    ///         .with_skill(MySkill)
+    ///         .with_skill_def(include_skill!("./skills/summarise")),
+    ///     llm,
+    /// ).build()
+    /// ```
+    pub fn builder(
+        agent: impl Into<crate::agent::AgentBuilder>,
+        llm: impl BaseLlm + 'static,
+    ) -> RuntimeBuilder {
+        RuntimeBuilder::new(agent.into(), llm)
     }
 
     /// Returns the agent definition owned by this runtime.
@@ -361,10 +388,20 @@ impl crate::runtime::core::executor::ExecutorRuntime for Runtime {
 
 #[cfg(feature = "runtime")]
 impl RuntimeBuilder {
-    pub fn new(agent: AgentDefinition, llm: impl BaseLlm + 'static) -> Self {
+    pub fn new(
+        agent_builder: impl Into<crate::agent::AgentBuilder>,
+        llm: impl BaseLlm + 'static,
+    ) -> Self {
+        let agent_builder = agent_builder.into();
         let base_llm: Arc<dyn BaseLlm> = Arc::new(llm);
+        #[cfg(feature = "agentskill")]
+        let (agent, pending_skill_defs) = agent_builder.into_parts();
+        #[cfg(not(feature = "agentskill"))]
+        let agent = agent_builder.build();
         Self {
             agent,
+            #[cfg(feature = "agentskill")]
+            pending_skill_defs,
             auth_service: Arc::new(StaticAuthService::default()),
             task_store: Arc::new(InMemoryTaskStore::new()),
             memory_service: Arc::new(InMemoryMemoryService::new()),
@@ -409,9 +446,15 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Builds the runtime with the configured services.
     #[must_use]
-    pub fn build(self) -> Runtime {
+    pub fn build(mut self) -> Runtime {
+        // Inject the LLM into each pending AgentSkillDef.
+        #[cfg(feature = "agentskill")]
+        for def in self.pending_skill_defs.drain(..) {
+            self.agent
+                .skills
+                .push(def.into_registration(self.base_llm.clone()));
+        }
         let negotiator = Arc::new(DefaultNegotiator::new(self.base_llm.clone()));
         let task_manager = Arc::new(DefaultTaskManager::with_store(self.task_store));
         Runtime {

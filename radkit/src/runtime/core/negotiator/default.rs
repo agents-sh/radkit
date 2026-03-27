@@ -128,7 +128,7 @@ Your role is to analyze user requests and determine the appropriate action."#,
                 );
                 if !metadata.examples.is_empty() {
                     prompt.push_str("  Examples:\n");
-                    for example in metadata.examples {
+                    for example in &metadata.examples {
                         let _ = writeln!(prompt, "    - {example}");
                     }
                 }
@@ -255,16 +255,6 @@ mod tests {
 
     struct StubSkill;
 
-    static STUB_METADATA: SkillMetadata = SkillMetadata::new(
-        "stub-skill",
-        "Stub Skill",
-        "A skill used for negotiation tests",
-        &[],
-        &[],
-        &[],
-        &[],
-    );
-
     #[cfg_attr(
         all(target_os = "wasi", target_env = "p1"),
         async_trait::async_trait(?Send)
@@ -289,8 +279,16 @@ mod tests {
     }
 
     impl RegisteredSkill for StubSkill {
-        fn metadata() -> &'static SkillMetadata {
-            &STUB_METADATA
+        fn metadata() -> std::sync::Arc<SkillMetadata> {
+            std::sync::Arc::new(SkillMetadata::new(
+                "stub-skill",
+                "Stub Skill",
+                "A skill used for negotiation tests",
+                &[],
+                &[],
+                &[],
+                &[],
+            ))
         }
     }
 

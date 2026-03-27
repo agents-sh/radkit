@@ -393,16 +393,6 @@ mod a2a_v1_runtime_tests {
 
     struct ImmediateSkill;
 
-    static IMMEDIATE_METADATA: SkillMetadata = SkillMetadata::new(
-        "immediate-skill",
-        "Immediate Skill",
-        "Completes immediately",
-        &[],
-        &[],
-        &[],
-        &[],
-    );
-
     #[async_trait::async_trait]
     impl SkillHandler for ImmediateSkill {
         async fn on_request(
@@ -430,8 +420,16 @@ mod a2a_v1_runtime_tests {
     }
 
     impl RegisteredSkill for ImmediateSkill {
-        fn metadata() -> &'static SkillMetadata {
-            &IMMEDIATE_METADATA
+        fn metadata() -> std::sync::Arc<SkillMetadata> {
+            std::sync::Arc::new(SkillMetadata::new(
+                "immediate-skill",
+                "Immediate Skill",
+                "Completes immediately",
+                &[],
+                &[],
+                &[],
+                &[],
+            ))
         }
     }
 
@@ -561,8 +559,7 @@ mod a2a_v1_runtime_tests {
 
     #[tokio::test]
     async fn a2a_client_v1_http_json_roundtrip() {
-        let llm =
-            FakeLlm::with_responses("fake-llm", [negotiation_response(IMMEDIATE_METADATA.id)]);
+        let llm = FakeLlm::with_responses("fake-llm", [negotiation_response("immediate-skill")]);
         let address = free_local_address();
         let base_url = format!("http://{address}");
         let runtime = Runtime::builder(test_agent(), llm)
@@ -637,8 +634,7 @@ mod a2a_v1_runtime_tests {
 
     #[tokio::test]
     async fn a2a_client_v1_jsonrpc_stream_roundtrip() {
-        let llm =
-            FakeLlm::with_responses("fake-llm", [negotiation_response(IMMEDIATE_METADATA.id)]);
+        let llm = FakeLlm::with_responses("fake-llm", [negotiation_response("immediate-skill")]);
         let address = free_local_address();
         let base_url = format!("http://{address}");
         let runtime = Runtime::builder(test_agent(), llm)
