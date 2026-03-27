@@ -376,3 +376,82 @@ async fn test_runtime_services_together() {
     // Log completion
     runtime.logging().log(LogLevel::Info, "Workflow completed");
 }
+
+#[cfg(all(
+    feature = "runtime",
+    feature = "task-store-sqlite",
+    not(all(target_os = "wasi", target_env = "p1"))
+))]
+mod sqlite_task_store_tests {
+    use super::*;
+    use a2a_types::{TaskState, TaskStatus};
+    use radkit::runtime::task_manager::Task;
+    use radkit::runtime::SqliteTaskStore;
+    use std::path::Path;
+    use uuid::Uuid;
+
+    fn temp_db_path(test_name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("radkit-{test_name}-{}.sqlite", Uuid::new_v4()))
+    }
+
+    fn cleanup_db_files(path: &Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_task_store_persists_across_runtime_rebuild() {
+        let path = temp_db_path("runtime-sqlite-store");
+
+        {
+            let llm = FakeLlm::with_responses("fake_llm", std::iter::empty());
+            let store = SqliteTaskStore::from_path(&path)
+                .await
+                .expect("sqlite store");
+            let runtime = Runtime::builder(test_agent(), llm)
+                .with_task_store(store)
+                .build();
+
+            let auth_context = runtime.auth().get_auth_context();
+            let task = Task {
+                id: "persisted-task".to_string(),
+                context_id: "persisted-context".to_string(),
+                status: TaskStatus {
+                    state: TaskState::Working,
+                    timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                    message: None,
+                },
+                artifacts: vec![],
+            };
+
+            runtime
+                .task_manager()
+                .save_task(&auth_context, &task)
+                .await
+                .expect("save task");
+        }
+
+        {
+            let llm = FakeLlm::with_responses("fake_llm", std::iter::empty());
+            let store = SqliteTaskStore::from_path(&path)
+                .await
+                .expect("sqlite store");
+            let runtime = Runtime::builder(test_agent(), llm)
+                .with_task_store(store)
+                .build();
+
+            let auth_context = runtime.auth().get_auth_context();
+            let task = runtime
+                .task_manager()
+                .get_task(&auth_context, "persisted-task")
+                .await
+                .expect("get task")
+                .expect("task should exist");
+
+            assert_eq!(task.context_id, "persisted-context");
+        }
+
+        cleanup_db_files(&path);
+    }
+}

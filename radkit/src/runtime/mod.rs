@@ -24,6 +24,11 @@ mod banner;
 pub use auth::AuthService;
 pub use logging::{LogLevel, LoggingService};
 pub use memory::MemoryService;
+#[cfg(all(
+    feature = "task-store-sqlite",
+    not(all(target_os = "wasi", target_env = "p1"))
+))]
+pub use task_manager::SqliteTaskStore;
 pub use task_manager::{
     DefaultTaskManager, ListTasksFilter, PaginatedResult, Task, TaskEvent, TaskManager, TaskStore,
 };

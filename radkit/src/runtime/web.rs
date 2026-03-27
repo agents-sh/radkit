@@ -10,7 +10,7 @@ use crate::runtime::core::executor::{
     ExecutorRuntime, PreparedSendMessage, RequestExecutor, TaskStream,
 };
 use crate::runtime::task_manager::{Task, TaskEvent};
-use crate::runtime::{AgentRuntime, Runtime};
+use crate::runtime::Runtime;
 use a2a_types::{
     A2ARequestPayload, AgentCard, AgentSkill, CancelTaskResponse, CancelTaskSuccessResponse,
     GetTaskResponse, GetTaskSuccessResponse, JSONRPCErrorResponse, JSONRPCId, MessageSendParams,
@@ -1158,6 +1158,7 @@ async fn fetch_task_events(
     })
 }
 
+#[cfg_attr(not(feature = "dev-ui"), allow(dead_code))]
 async fn build_task_with_history(
     runtime: &Runtime,
     auth_ctx: &AuthContext,

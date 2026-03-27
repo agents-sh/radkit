@@ -130,8 +130,6 @@ impl TaskManager for DefaultTaskManager {
                 }
             }
         }
-
-        messages.sort_by(|a, b| a.message_id.cmp(&b.message_id));
         Ok(messages)
     }
 

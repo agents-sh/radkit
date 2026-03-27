@@ -17,15 +17,26 @@
 
 mod default;
 pub mod in_memory;
+#[cfg(all(
+    feature = "task-store-sqlite",
+    not(all(target_os = "wasi", target_env = "p1"))
+))]
+pub mod sqlite;
 
 pub use default::DefaultTaskManager;
 pub use in_memory::InMemoryTaskStore;
+#[cfg(all(
+    feature = "task-store-sqlite",
+    not(all(target_os = "wasi", target_env = "p1"))
+))]
+pub use sqlite::SqliteTaskStore;
 pub type InMemoryTaskManager = DefaultTaskManager;
 
 use crate::compat::{MaybeSend, MaybeSync};
 use crate::errors::AgentResult;
 use crate::runtime::context::AuthContext;
 use a2a_types::{Artifact, Message, TaskArtifactUpdateEvent, TaskStatus, TaskStatusUpdateEvent};
+use serde::{Deserialize, Serialize};
 
 // ============================================================================
 // Data Structures
@@ -33,7 +44,7 @@ use a2a_types::{Artifact, Message, TaskArtifactUpdateEvent, TaskStatus, TaskStat
 
 /// Represents the state of a single task, mirroring the A2A Task object, but
 /// stored without the conversational history for efficiency.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Task {
     pub id: String,
     /// Corresponds to A2A `contextId`.
@@ -44,7 +55,7 @@ pub struct Task {
 
 /// Represents a significant event that occurred during a task's lifecycle.
 /// This enum can be converted from and to the various A2A event types.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum TaskEvent {
     StatusUpdate(TaskStatusUpdateEvent),
     ArtifactUpdate(TaskArtifactUpdateEvent),
@@ -210,6 +221,7 @@ pub trait TaskManager: MaybeSend + MaybeSync {
 
     /// Retrieves all Message events across all tasks within a context.
     /// This is useful for building the full conversation history for LLM context.
+    /// Messages are returned in persisted append order.
     async fn get_negotiating_messages(
         &self,
         auth_ctx: &AuthContext,
