@@ -65,6 +65,7 @@ Radkit ships optional capabilities that you can opt into per target:
 
 - `runtime`: Enables the native runtime handle, HTTP server, tracing, and other dependencies required to run A2A-compliant agents locally.
 - `dev-ui`: Builds on top of `runtime` and serves an interactive UI (native-only) where you can trigger tasks, and inspect streaming output.
+- `task-store-sqlite`: Enables a native SQLite-backed `TaskStore` for persistent task, event, and state storage.
 
 ## Core Concepts
 

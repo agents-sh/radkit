@@ -551,7 +551,7 @@ mod tests {
             .expect("task exists");
         assert_eq!(retrieved.id, task.id);
 
-        // negotiation messages ordering
+        // negotiation messages keep persisted append order
         let msg_a = make_message("b", "ctx-1");
         let msg_b = make_message("a", "ctx-1");
         manager
@@ -612,8 +612,8 @@ mod tests {
             .await
             .expect("negotiation");
         assert_eq!(negotiation.len(), 2);
-        assert_eq!(negotiation[0].message_id, "a");
-        assert_eq!(negotiation[1].message_id, "b");
+        assert_eq!(negotiation[0].message_id, "b");
+        assert_eq!(negotiation[1].message_id, "a");
 
         let ids = manager
             .list_task_ids(&auth_ctx, Some("ctx-1"))

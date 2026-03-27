@@ -256,6 +256,19 @@ impl From<reqwest::Error> for AgentError {
     }
 }
 
+#[cfg(all(
+    feature = "task-store-sqlite",
+    not(all(target_os = "wasi", target_env = "p1"))
+))]
+impl From<sqlx::Error> for AgentError {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Internal {
+            component: "sqlite_task_store".to_string(),
+            reason: error.to_string(),
+        }
+    }
+}
+
 impl From<std::num::ParseIntError> for AgentError {
     fn from(error: std::num::ParseIntError) -> Self {
         Self::InvalidInput(error.to_string())

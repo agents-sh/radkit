@@ -25,6 +25,8 @@ crate-type = ["cdylib", "rlib"]
 default = ["macros"]
 # Enables the runtime handle and a full native agent server environment
 runtime = ["dep:axum", "dep:tower-http", "dep:tracing", "dep:tracing-subscriber"]
+# Enables a native SQLite-backed TaskStore for persistent task, event, and state storage
+task-store-sqlite = ["dep:sqlx"]
 # Enables developer UI with TypeScript type generation
 dev-ui = ["runtime", "dep:ts-rs"]
 # Enables OpenAPI toolset for connecting to REST APIs
@@ -72,6 +74,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = tr
 ts-rs = { version = "11.1.0", optional = true }
 # Optional MCP support (native-only)
 rmcp = { version = "0.6.3", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"], optional = true }
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio-rustls"], optional = true }
 
 [target.'cfg(all(target_os = "wasi", target_env = "p1"))'.dependencies]
 wasm-bindgen-futures = "0.4"
