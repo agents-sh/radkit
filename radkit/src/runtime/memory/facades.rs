@@ -33,7 +33,7 @@ pub struct OwnedHistory {
 }
 
 impl OwnedHistory {
-    /// Create a new OwnedHistory facade wrapping the given memory service.
+    /// Create a new `OwnedHistory` facade wrapping the given memory service.
     pub fn new(service: Arc<dyn MemoryService>) -> Self {
         Self { service }
     }
@@ -102,7 +102,7 @@ pub struct OwnedKnowledge {
 }
 
 impl OwnedKnowledge {
-    /// Create a new OwnedKnowledge facade wrapping the given memory service.
+    /// Create a new `OwnedKnowledge` facade wrapping the given memory service.
     pub fn new(service: Arc<dyn MemoryService>) -> Self {
         Self { service }
     }

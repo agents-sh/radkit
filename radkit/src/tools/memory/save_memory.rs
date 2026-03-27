@@ -38,11 +38,11 @@ impl SaveMemoryTool {
     async_trait::async_trait
 )]
 impl BaseTool for SaveMemoryTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "save_memory"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Save important user information to long-term memory. \
          Use this to remember user preferences, facts, or insights \
          that should be recalled in future conversations."
@@ -88,7 +88,7 @@ impl BaseTool for SaveMemoryTool {
         let category = args
             .get("category")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         let memory_content = MemoryContent {
             text: text_content,

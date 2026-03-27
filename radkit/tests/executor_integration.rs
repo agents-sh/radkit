@@ -1,8 +1,4 @@
 //! Integration tests for RequestExecutor orchestration.
-//!
-//! These tests verify that the RequestExecutor correctly coordinates skills,
-//! task management, negotiation, and multi-turn conversations following the
-//! A2A protocol.
 
 #[cfg(all(
     feature = "runtime",
@@ -10,7 +6,7 @@
     not(all(target_os = "wasi", target_env = "p1"))
 ))]
 mod tests {
-    use a2a_types::{Message, MessageRole, MessageSendParams, Part, TaskQueryParams};
+    use a2a_types::{self as v1, part, Role, TaskState};
     use radkit::agent::{
         Agent, OnInputResult, OnRequestResult, RegisteredSkill, SkillHandler, SkillMetadata,
         SkillSlot,
@@ -25,7 +21,6 @@ mod tests {
     use std::sync::Arc;
     use uuid::Uuid;
 
-    // Helper to create structured output response for negotiation
     fn negotiation_response(skill_id: &str) -> radkit::errors::AgentResult<LlmResponse> {
         let decision = serde_json::json!({
             "type": "start_task",
@@ -38,21 +33,30 @@ mod tests {
         ))
     }
 
-    // Helper to create a simple text message
-    fn create_message(text: &str, context_id: Option<String>, task_id: Option<String>) -> Message {
-        Message {
-            kind: "message".to_string(),
-            message_id: Uuid::new_v4().to_string(),
-            role: MessageRole::User,
-            parts: vec![Part::Text {
-                text: text.to_string(),
+    fn create_send_request(
+        text: &str,
+        context_id: Option<String>,
+        task_id: Option<String>,
+    ) -> v1::SendMessageRequest {
+        v1::SendMessageRequest {
+            message: Some(v1::Message {
+                message_id: Uuid::new_v4().to_string(),
+                role: Role::User as i32,
+                parts: vec![v1::Part {
+                    content: Some(part::Content::Text(text.to_string())),
+                    metadata: None,
+                    filename: String::new(),
+                    media_type: "text/plain".to_string(),
+                }],
+                context_id: context_id.unwrap_or_default(),
+                task_id: task_id.unwrap_or_default(),
+                reference_task_ids: vec![],
+                extensions: vec![],
                 metadata: None,
-            }],
-            context_id,
-            task_id,
-            reference_task_ids: vec![],
-            extensions: vec![],
+            }),
+            configuration: None,
             metadata: None,
+            tenant: String::new(),
         }
     }
 
@@ -113,32 +117,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_new_task_immediate_completion() {
-        // Provide structured output response for skill negotiation
         let llm = FakeLlm::with_responses("fake-llm", [negotiation_response("immediate")]);
-
         let runtime = Runtime::builder(Agent::builder().with_skill(ImmediateSkill).build(), llm)
             .build()
             .into_shared();
         let executor_runtime: Arc<dyn ExecutorRuntime> = runtime.clone();
         let executor = RequestExecutor::new(executor_runtime);
 
-        let params = MessageSendParams {
-            message: create_message("Hello", None, None),
-            configuration: None,
-            metadata: None,
-        };
-
-        let result = executor.handle_send_message(params).await;
-        if let Err(ref e) = result {
-            eprintln!("Error: {:?}", e);
-        }
+        let result = executor
+            .handle_send_message(create_send_request("Hello", None, None))
+            .await;
         assert!(result.is_ok(), "send_message should succeed");
 
-        // Should return a task with Completed status
-        let send_result = result.unwrap();
-        match send_result {
-            a2a_types::SendMessageResult::Task(task) => {
-                assert_eq!(task.status.state, a2a_types::TaskState::Completed);
+        match result.unwrap().payload {
+            Some(v1::send_message_response::Payload::Task(task)) => {
+                assert_eq!(
+                    task.status.as_ref().unwrap().state,
+                    TaskState::Completed as i32
+                );
                 assert!(!task.history.is_empty(), "should have messages in history");
             }
             _ => panic!("expected Task result"),
@@ -196,7 +192,6 @@ mod tests {
             input: Content,
         ) -> Result<OnInputResult, AgentError> {
             let slot: GreetingSlot = state.slot()?.expect("slot should be available");
-
             match slot {
                 GreetingSlot::AwaitingName => {
                     let name = input.first_text().unwrap_or("Friend");
@@ -218,48 +213,48 @@ mod tests {
     #[tokio::test]
     async fn test_task_continuation_with_input() {
         let llm = FakeLlm::with_responses("fake-llm", [negotiation_response("greeting")]);
-
         let runtime = Runtime::builder(Agent::builder().with_skill(GreetingSkill).build(), llm)
             .build()
             .into_shared();
         let executor_runtime: Arc<dyn ExecutorRuntime> = runtime.clone();
         let executor = RequestExecutor::new(executor_runtime);
 
-        // Step 1: Send initial request
-        let params1 = MessageSendParams {
-            message: create_message("Greet me", None, None),
-            configuration: None,
-            metadata: None,
-        };
-
-        let result1 = executor.handle_send_message(params1).await.unwrap();
-        let (context_id, task_id) = match result1 {
-            a2a_types::SendMessageResult::Task(task) => {
-                assert_eq!(task.status.state, a2a_types::TaskState::InputRequired);
+        let result1 = executor
+            .handle_send_message(create_send_request("Greet me", None, None))
+            .await
+            .unwrap();
+        let (context_id, task_id) = match result1.payload {
+            Some(v1::send_message_response::Payload::Task(task)) => {
+                assert_eq!(
+                    task.status.as_ref().unwrap().state,
+                    TaskState::InputRequired as i32
+                );
                 (task.context_id, task.id)
             }
             _ => panic!("expected Task result"),
         };
 
-        // Step 2: Continue with input
-        let params2 = MessageSendParams {
-            message: create_message("Alice", Some(context_id), Some(task_id)),
-            configuration: None,
-            metadata: None,
-        };
-
-        let result2 = executor.handle_send_message(params2).await.unwrap();
-        match result2 {
-            a2a_types::SendMessageResult::Task(task) => {
-                assert_eq!(task.status.state, a2a_types::TaskState::Completed);
-                // Find the assistant's final message
+        let result2 = executor
+            .handle_send_message(create_send_request(
+                "Alice",
+                Some(context_id),
+                Some(task_id),
+            ))
+            .await
+            .unwrap();
+        match result2.payload {
+            Some(v1::send_message_response::Payload::Task(task)) => {
+                assert_eq!(
+                    task.status.as_ref().unwrap().state,
+                    TaskState::Completed as i32
+                );
                 let final_msg = task
                     .history
                     .iter()
-                    .rfind(|msg| msg.role == MessageRole::Agent)
+                    .rfind(|msg| msg.role == Role::Agent as i32)
                     .expect("should have agent message");
-                let text = match &final_msg.parts[0] {
-                    Part::Text { text, .. } => text,
+                let text = match &final_msg.parts[0].content {
+                    Some(part::Content::Text(t)) => t,
                     _ => panic!("expected text content"),
                 };
                 assert!(text.contains("Hello, Alice!"), "should greet by name");
@@ -326,22 +321,16 @@ mod tests {
     #[tokio::test]
     async fn test_task_failure() {
         let llm = FakeLlm::with_responses("fake-llm", [negotiation_response("failing")]);
-
         let runtime = Runtime::builder(Agent::builder().with_skill(FailingSkill).build(), llm)
             .build()
             .into_shared();
         let executor_runtime: Arc<dyn ExecutorRuntime> = runtime.clone();
         let executor = RequestExecutor::new(executor_runtime);
 
-        let params = MessageSendParams {
-            message: create_message("Do something", None, None),
-            configuration: None,
-            metadata: None,
-        };
+        let result = executor
+            .handle_send_message(create_send_request("Do something", None, None))
+            .await;
 
-        let result = executor.handle_send_message(params).await;
-
-        // The executor returns the skill error directly when skill fails during on_request
         assert!(result.is_err(), "Should fail when skill throws error");
         match result.unwrap_err() {
             AgentError::Internal { component, reason } => {
@@ -359,39 +348,36 @@ mod tests {
     #[tokio::test]
     async fn test_get_task() {
         let llm = FakeLlm::with_responses("fake-llm", [negotiation_response("immediate")]);
-
         let runtime = Runtime::builder(Agent::builder().with_skill(ImmediateSkill).build(), llm)
             .build()
             .into_shared();
         let executor_runtime: Arc<dyn ExecutorRuntime> = runtime.clone();
         let executor = RequestExecutor::new(executor_runtime);
 
-        // Create a task
-        let params = MessageSendParams {
-            message: create_message("test", None, None),
-            configuration: None,
-            metadata: None,
-        };
-
-        let send_result = executor.handle_send_message(params).await.unwrap();
-        let task_id = match send_result {
-            a2a_types::SendMessageResult::Task(task) => task.id,
+        let send_result = executor
+            .handle_send_message(create_send_request("test", None, None))
+            .await
+            .unwrap();
+        let task_id = match send_result.payload {
+            Some(v1::send_message_response::Payload::Task(task)) => task.id,
             _ => panic!("expected Task"),
         };
 
-        // Retrieve the task
         let get_result = executor
-            .handle_get_task(TaskQueryParams {
+            .handle_get_task(v1::GetTaskRequest {
                 id: task_id.clone(),
                 history_length: None,
-                metadata: None,
+                tenant: String::new(),
             })
             .await;
 
         assert!(get_result.is_ok(), "should retrieve task");
         let retrieved_task = get_result.unwrap();
         assert_eq!(retrieved_task.id, task_id);
-        assert_eq!(retrieved_task.status.state, a2a_types::TaskState::Completed);
+        assert_eq!(
+            retrieved_task.status.as_ref().unwrap().state,
+            TaskState::Completed as i32
+        );
     }
 
     // ============================================================================
@@ -401,7 +387,6 @@ mod tests {
     #[tokio::test]
     async fn test_get_nonexistent_task() {
         let llm = FakeLlm::with_responses("fake-llm", [negotiation_response("immediate")]);
-
         let runtime = Runtime::builder(Agent::builder().with_skill(ImmediateSkill).build(), llm)
             .build()
             .into_shared();
@@ -409,10 +394,10 @@ mod tests {
         let executor = RequestExecutor::new(executor_runtime);
 
         let result = executor
-            .handle_get_task(TaskQueryParams {
+            .handle_get_task(v1::GetTaskRequest {
                 id: "nonexistent-task-id".to_string(),
                 history_length: None,
-                metadata: None,
+                tenant: String::new(),
             })
             .await;
 
@@ -432,38 +417,28 @@ mod tests {
     #[tokio::test]
     async fn test_invalid_context_task_combination() {
         let llm = FakeLlm::with_responses("fake-llm", [negotiation_response("greeting")]);
-
         let runtime = Runtime::builder(Agent::builder().with_skill(GreetingSkill).build(), llm)
             .build()
             .into_shared();
         let executor_runtime: Arc<dyn ExecutorRuntime> = runtime.clone();
         let executor = RequestExecutor::new(executor_runtime);
 
-        // Create first task
-        let params1 = MessageSendParams {
-            message: create_message("Hello", None, None),
-            configuration: None,
-            metadata: None,
-        };
-
-        let result1 = executor.handle_send_message(params1).await.unwrap();
-        let task1_id = match result1 {
-            a2a_types::SendMessageResult::Task(task) => task.id,
+        let result1 = executor
+            .handle_send_message(create_send_request("Hello", None, None))
+            .await
+            .unwrap();
+        let task1_id = match result1.payload {
+            Some(v1::send_message_response::Payload::Task(task)) => task.id,
             _ => panic!("expected Task"),
         };
 
-        // Try to use that task_id with a different context_id
-        let params2 = MessageSendParams {
-            message: create_message(
+        let result2 = executor
+            .handle_send_message(create_send_request(
                 "Continue",
                 Some("wrong-context-id".to_string()),
                 Some(task1_id),
-            ),
-            configuration: None,
-            metadata: None,
-        };
-
-        let result2 = executor.handle_send_message(params2).await;
+            ))
+            .await;
         assert!(result2.is_err(), "should fail with mismatched context/task");
     }
 }

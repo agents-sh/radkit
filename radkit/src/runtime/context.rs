@@ -482,9 +482,13 @@ impl ProgressSender {
             return Ok(());
         };
 
+        let now = Utc::now();
         let status = TaskStatus {
-            state: A2ATaskState::Working,
-            timestamp: Some(Utc::now().to_rfc3339()),
+            state: A2ATaskState::Working as i32,
+            timestamp: Some(::pbjson_types::Timestamp {
+                seconds: now.timestamp(),
+                nanos: now.timestamp_subsec_nanos().cast_signed(),
+            }),
             message: Some(utils::create_a2a_message(
                 Some(&self.context_id),
                 Some(&self.task_id),
@@ -521,12 +525,11 @@ impl ProgressSender {
 
         let a2a_artifact = utils::artifact_to_a2a(&artifact);
         let event = TaskArtifactUpdateEvent {
-            kind: a2a_types::ARTIFACT_UPDATE_KIND.to_string(),
             task_id: self.task_id.clone(),
             context_id: self.context_id.clone(),
-            artifact: a2a_artifact,
-            append: None,
-            last_chunk: Some(false),
+            artifact: Some(a2a_artifact),
+            append: false,
+            last_chunk: false,
             metadata: None,
         };
 
@@ -552,6 +555,10 @@ impl ProgressSender {
     }
 
     /// No-op: sends nothing in non-runtime builds.
+    ///
+    /// # Errors
+    /// Never errors in this stub implementation.
+    #[allow(clippy::unused_async)] // async required for API parity with the runtime impl
     pub async fn send_update(
         &self,
         _message: impl Into<crate::models::Content>,
@@ -560,6 +567,10 @@ impl ProgressSender {
     }
 
     /// No-op: sends nothing in non-runtime builds.
+    ///
+    /// # Errors
+    /// Never errors in this stub implementation.
+    #[allow(clippy::unused_async)] // async required for API parity with the runtime impl
     pub async fn send_partial_artifact(
         &self,
         _artifact: crate::agent::Artifact,

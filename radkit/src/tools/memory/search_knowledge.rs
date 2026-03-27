@@ -36,11 +36,11 @@ impl SearchKnowledgeTool {
     async_trait::async_trait
 )]
 impl BaseTool for SearchKnowledgeTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "search_knowledge"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Search documents and knowledge base for relevant information. \
          Use this to find answers from uploaded documents, manuals, or reference material."
     }
@@ -79,9 +79,8 @@ impl BaseTool for SearchKnowledgeTool {
 
         let limit = args
             .get("limit")
-            .and_then(|v| v.as_u64())
-            .map(|v| v.min(10) as usize)
-            .unwrap_or(5);
+            .and_then(serde_json::Value::as_u64)
+            .map_or(5, |v| v.min(10) as usize);
 
         let options = SearchOptions::knowledge_only().with_limit(limit);
 

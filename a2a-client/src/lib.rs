@@ -5,7 +5,7 @@
 //!
 //! ## Features
 //!
-//! - Full A2A protocol support (JSON-RPC 2.0)
+//! - A2A v1 transport support over HTTP+JSON and JSON-RPC 2.0
 //! - Non-streaming and streaming message support
 //! - Task retrieval and listing
 //! - Agent discovery via agent cards
@@ -16,7 +16,7 @@
 //!
 //! ```rust,no_run
 //! use a2a_client::A2AClient;
-//! use a2a_types::{Message, MessageRole, MessageSendParams, Part};
+//! use a2a_types::{Message, Part, Role, SendMessageRequest, part};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create client from agent card URL
@@ -26,28 +26,31 @@
 //!
 //! // Create message
 //! let message = Message {
-//!     kind: "message".to_string(),
 //!     message_id: "msg_123".to_string(),
-//!     role: MessageRole::User,
-//!     parts: vec![Part::Text {
-//!         text: "Hello!".to_string(),
+//!     context_id: String::new(),
+//!     task_id: String::new(),
+//!     role: Role::User.into(),
+//!     parts: vec![Part {
+//!         content: Some(part::Content::Text("Hello!".to_string())),
 //!         metadata: None,
+//!         filename: String::new(),
+//!         media_type: "text/plain".to_string(),
 //!     }],
-//!     context_id: None,
-//!     task_id: None,
-//!     reference_task_ids: Vec::new(),
-//!     extensions: Vec::new(),
 //!     metadata: None,
+//!     extensions: Vec::new(),
+//!     reference_task_ids: Vec::new(),
 //! };
 //!
 //! // Send message
-//! let params = MessageSendParams {
-//!     message,
-//!     configuration: None,
-//!     metadata: None,
-//! };
-//!
-//! let result = client.send_message(params).await?;
+//! let result = client
+//!     .send_message(SendMessageRequest {
+//!         tenant: String::new(),
+//!         message: Some(message),
+//!         configuration: None,
+//!         metadata: None,
+//!     })
+//!     .await?;
+//! # let _ = result;
 //! # Ok(())
 //! # }
 //! ```
@@ -62,5 +65,5 @@ pub use error::{A2AError, A2AResult};
 /// Re-export A2A protocol types so downstream crates can ensure they use the
 /// exact same type definitions as the client.
 pub mod types {
-    pub use a2a_types::*;
+    pub use a2a_types::{self as v1, JSONRPCError, JSONRPCErrorResponse, JSONRPCId};
 }

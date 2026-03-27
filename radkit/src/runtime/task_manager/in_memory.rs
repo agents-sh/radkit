@@ -500,7 +500,7 @@ mod tests {
         DefaultTaskManager, ListTasksFilter, TaskEvent, TaskManager,
     };
     use a2a_types::{
-        Message, MessageRole, TaskArtifactUpdateEvent, TaskState, TaskStatus, TaskStatusUpdateEvent,
+        Artifact, Message, TaskArtifactUpdateEvent, TaskState, TaskStatus, TaskStatusUpdateEvent,
     };
 
     fn auth() -> AuthContext {
@@ -512,12 +512,11 @@ mod tests {
 
     fn make_message(id: &str, context: &str) -> Message {
         Message {
-            kind: "message".into(),
             message_id: id.into(),
-            role: MessageRole::Agent,
+            role: a2a_types::Role::Agent as i32,
             parts: Vec::new(),
-            context_id: Some(context.into()),
-            task_id: None,
+            context_id: context.into(),
+            task_id: String::new(),
             reference_task_ids: Vec::new(),
             extensions: Vec::new(),
             metadata: None,
@@ -532,7 +531,7 @@ mod tests {
             id: "task-1".into(),
             context_id: "ctx-1".into(),
             status: TaskStatus {
-                state: TaskState::Submitted,
+                state: TaskState::Submitted as i32,
                 timestamp: None,
                 message: None,
             },
@@ -564,15 +563,13 @@ mod tests {
             .expect("add message");
 
         let status_event = TaskStatusUpdateEvent {
-            kind: a2a_types::STATUS_UPDATE_KIND.to_string(),
             task_id: "task-1".into(),
             context_id: "ctx-1".into(),
-            status: TaskStatus {
-                state: TaskState::Working,
+            status: Some(TaskStatus {
+                state: TaskState::Working as i32,
                 timestamp: None,
                 message: None,
-            },
-            is_final: false,
+            }),
             metadata: None,
         };
         manager
@@ -581,19 +578,18 @@ mod tests {
             .expect("status");
 
         let artifact_event = TaskArtifactUpdateEvent {
-            kind: a2a_types::ARTIFACT_UPDATE_KIND.to_string(),
             task_id: "task-1".into(),
             context_id: "ctx-1".into(),
-            artifact: a2a_types::Artifact {
+            artifact: Some(Artifact {
                 artifact_id: "artifact".into(),
                 parts: Vec::new(),
-                name: None,
-                description: None,
+                name: String::new(),
+                description: String::new(),
                 extensions: Vec::new(),
                 metadata: None,
-            },
-            append: None,
-            last_chunk: None,
+            }),
+            append: false,
+            last_chunk: false,
             metadata: None,
         };
         manager

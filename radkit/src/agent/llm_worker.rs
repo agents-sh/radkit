@@ -680,7 +680,7 @@ mod tests {
     }
 
     fn structured_response(value: i32) -> AgentResult<LlmResponse> {
-        let json_str = format!(r#"{{"value": {}}}"#, value);
+        let json_str = format!(r#"{{"value": {value}}}"#);
         FakeLlm::content_response(Content::from_text(json_str))
     }
 

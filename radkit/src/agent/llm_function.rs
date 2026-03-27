@@ -213,10 +213,10 @@ mod tests {
     }
 
     fn structured_response(value: i32, extra_text: Option<&str>) -> LlmResponse {
-        let json_str = format!(r#"{{"value": {}}}"#, value);
+        let json_str = format!(r#"{{"value": {value}}}"#);
 
         let content_str = if let Some(text) = extra_text {
-            format!("{}\n```json\n{}\n```", text, json_str)
+            format!("{text}\n```json\n{json_str}\n```")
         } else {
             json_str
         };

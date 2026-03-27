@@ -1,88 +1,85 @@
 # a2a-types
 
-Rust implementation of the [Agent-to-Agent (A2A) Protocol](https://github.com/a2aproject/A2A) types.
+Rust types for the [A2A v1.0 protocol](https://a2a-protocol.org/latest/specification/), generated from the canonical `a2a.proto` definition vendored in this repository.
 
-## Version Compatibility
+## Source of truth
 
-| Crate Version | A2A Protocol Version | Notes |
-|---------------|---------------------|-------|
-| 0.1.0 - 0.1.x | [0.3.0](https://github.com/a2aproject/A2A/releases/tag/v0.3.0) | Initial implementation |
+All types are generated at build time by [`prost`](https://github.com/tokio-rs/prost) and [`pbjson`](https://github.com/influxdata/pbjson) from `proto/a2a.proto`. There is no hand-written domain model — the proto file is the single source of truth for every field name, type, and serialization format.
 
-
-See the [A2A Protocol Releases](https://github.com/a2aproject/A2A/releases/) for the specification.
-
-## Overview
-
-This crate provides the complete type definitions for the A2A Protocol, enabling interoperability between AI agents. It includes:
-
-- JSON-RPC 2.0 message types
-- A2A protocol-specific types (Tasks, Messages, Parts)
-- Error definitions
-- Request/Response structures
-
-## Implementation Details
-
-This crate is a direct implementation of the official [A2A JSON Schema](https://github.com/a2aproject/A2A/blob/8d57eba286de756176892518a8fc39b0ac2ccefb/specification/json/a2a.json). It is designed to be robust, idiomatic, and correct.
-
-Key implementation patterns include:
-
-- **`serde` for Serialization:** All types are derived with `serde::Serialize` and `serde::Deserialize` for seamless JSON handling. Attributes like `#[serde(rename = "...")]` are used to map Rust's `snake_case` fields to the `camelCase` or other conventions used in the JSON schema.
-- **Discriminated (Tagged) Unions:** For JSON `anyOf` structures that have a clear discriminator field (like `A2ARequest` which is tagged by `method`, or `SecurityScheme` tagged by `type`), the crate uses `#[serde(tag = "...")]`. This provides safe, explicit, and efficient deserialization.
-- **Untagged Unions:** For JSON unions without a common discriminator field (like `JSONRPCResponse`), the crate uses `#[serde(untagged)]` to deserialize based on structural matching.
-- **Robustness:**
-    - `#[serde(default)]` is used for optional fields (especially `Vec<T>`) to ensure that missing fields in the JSON payload deserialize to a default empty value instead of causing an error.
-    - Large enum variants are wrapped in `Box<T>` to keep the enum's size on the stack small and prevent potential stack overflows.
-
-## Usage
-
-Add this to your `Cargo.toml`:
+## Installation
 
 ```toml
 [dependencies]
-a2a-types = "0.1.1"
+a2a-types = "0.2.0"
 ```
 
-Then use the types in your code:
+## Usage
+
+Every generated type is available directly at the crate root — no sub-module prefix required.
 
 ```rust
-use a2a_types::{Task, Message, MessageRole, Part, TaskState};
+use a2a_types::{Message, Part, Role, SendMessageRequest, part};
 
-// Create a new message
 let message = Message {
-    role: MessageRole::User,
-    content: vec![Part::Text {
-        text: "Hello, agent!".to_string(),
+    message_id: "msg_123".to_string(),
+    context_id: String::new(),
+    task_id: String::new(),
+    role: Role::User.into(),
+    parts: vec![Part {
+        content: Some(part::Content::Text("Hello, agent!".to_string())),
         metadata: None,
+        filename: String::new(),
+        media_type: "text/plain".to_string(),
     }],
     metadata: None,
+    extensions: Vec::new(),
+    reference_task_ids: Vec::new(),
 };
 
-// Work with task states
-let state = TaskState::Working;
+let request = SendMessageRequest {
+    tenant: String::new(),
+    message: Some(message),
+    configuration: None,
+    metadata: None,
+};
 ```
 
-## Types
+## What is included
 
-The crate is organized around the core concepts of the A2A protocol.
+| Category | Types |
+|---|---|
+| Core protocol | `Task`, `TaskStatus`, `TaskState`, `Message`, `Part`, `Artifact`, `Role` |
+| Streaming events | `TaskStatusUpdateEvent`, `TaskArtifactUpdateEvent`, `StreamResponse` |
+| Request / response | `SendMessageRequest`, `SendMessageResponse`, `GetTaskRequest`, `ListTasksRequest`, `CancelTaskRequest`, `SubscribeToTaskRequest` |
+| Agent card | `AgentCard`, `AgentCapabilities`, `AgentSkill`, `AgentInterface`, `AgentProvider` |
+| Security schemes | `SecurityScheme`, `ApiKeySecurityScheme`, `HttpAuthSecurityScheme`, `OAuth2SecurityScheme`, `OAuthFlows`, and all OAuth flow variants |
+| JSON-RPC framing | `JSONRPCId`, `JSONRPCError`, `JSONRPCErrorResponse` (hand-written; JSON-RPC is not in the proto) |
+| A2A error codes | `InvalidRequestError`, `InvalidParamsError`, `InternalError`, `TaskNotFoundError`, `UnsupportedOperationError` |
 
-### Agent Discovery
-- `AgentCard`: The central manifest describing an agent's capabilities, skills, and security requirements.
-- `AgentSkill`: A distinct capability or function the agent can perform.
-- `AgentCapabilities`: Optional features supported by the agent (e.g., streaming).
-- `SecurityScheme`: A tagged enum describing authentication methods (API Key, OAuth2, etc.).
+`oneof` payload variants live in sub-modules mirroring the proto structure:
 
-### Core Protocol Objects
-- `Task`: The stateful unit of work, tracking status, history, and results.
-- `Message`: A single communication turn between a client and an agent.
-- `Part`: A discriminated enum for content within a `Message` or `Artifact` (`Text`, `File`, `Data`).
-- `Artifact`: An output (e.g., a document, image) generated by a `Task`.
-- `TaskState`: An enum representing the task lifecycle (`Submitted`, `Working`, `Completed`, etc.).
+```rust
+use a2a_types::{part, send_message_response, stream_response};
 
-### JSON-RPC and A2A Requests
-- `A2ARequest`: The primary struct for all client requests. It wraps the `A2ARequestPayload`.
-- `A2ARequestPayload`: A tagged enum where each variant represents a specific A2A method (e.g., `SendMessage`, `GetTask`, `CancelTask`).
-- `JSONRPCResponse`: An enum representing all possible success or error responses from the agent.
-- `A2AError`: An enum representing all A2A-specific and standard JSON-RPC errors.
+// Construct a text part
+let content = part::Content::Text("hello".to_string());
+
+// Match a stream event
+match response.payload {
+    Some(stream_response::Payload::StatusUpdate(update)) => { /* ... */ }
+    Some(stream_response::Payload::ArtifactUpdate(update)) => { /* ... */ }
+    Some(stream_response::Payload::Message(msg)) => { /* ... */ }
+    Some(stream_response::Payload::Task(task)) => { /* ... */ }
+    None => {}
+}
+```
+
+## Version compatibility
+
+| Crate version | A2A protocol version |
+|---|---|
+| 0.1.x | 1.0 — hand-written types, `a2a_types::v1` namespace |
+| 0.2.x | 1.0 — proto-generated types, flat `a2a_types::*` namespace |
 
 ## License
 

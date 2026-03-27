@@ -1,65 +1,34 @@
 //! Utility functions for working with models and A2A protocol types.
-//!
-//! This module provides helper functions for common conversions and operations
-//! on model types, particularly for interop with the A2A protocol.
 
-use a2a_types::{Message, MessageRole};
+use a2a_types::{Artifact as A2AArtifact, Message as A2AMessage, Part as A2APart, Role as A2ARole};
 use uuid::Uuid;
 
 use crate::agent::Artifact;
 use crate::models::{Content, ContentPart, Role};
 
-/// Creates an A2A Message from radkit Content.
-///
-/// This is a utility function for converting radkit's internal `Content` type
-/// into the A2A protocol's `Message` type. It handles the conversion of content
-/// parts and sets appropriate message metadata.
-///
-/// # Arguments
-///
-/// * `context_id` - Optional context ID for grouping related messages
-/// * `task_id` - Optional task ID if this message is part of a task
-/// * `role` - The role of the message sender (User, Assistant, System, or Tool)
-/// * `content` - The message content to convert
-///
-/// # Examples
-///
-/// ```ignore
-/// use radkit::models::{Content, Role, utils};
-///
-/// let content = Content::from_text("Hello, world!");
-/// let message = utils::create_a2a_message(
-///     Some("ctx-123"),
-///     None,
-///     Role::User,
-///     content,
-/// );
-/// ```
+/// Creates an A2A `Message` from radkit `Content`.
 pub fn create_a2a_message(
     context_id: Option<&str>,
     task_id: Option<&str>,
     role: Role,
     content: Content,
-) -> Message {
-    // Convert ContentParts to A2A Parts
-    let parts: Vec<a2a_types::Part> = content
+) -> A2AMessage {
+    let parts: Vec<A2APart> = content
         .into_parts()
         .into_iter()
         .filter_map(ContentPart::into_a2a_part)
         .collect();
 
-    // Map radkit Role to A2A MessageRole
-    let message_role = match role {
-        Role::User => MessageRole::User,
-        Role::Assistant | Role::System | Role::Tool => MessageRole::Agent,
+    let proto_role = match role {
+        Role::User => A2ARole::User,
+        Role::Assistant | Role::System | Role::Tool => A2ARole::Agent,
     };
 
-    Message {
-        kind: "message".to_string(),
+    A2AMessage {
         message_id: Uuid::new_v4().to_string(),
-        role: message_role,
-        context_id: context_id.map(std::string::ToString::to_string),
-        task_id: task_id.map(std::string::ToString::to_string),
+        role: proto_role as i32,
+        context_id: context_id.unwrap_or_default().to_string(),
+        task_id: task_id.unwrap_or_default().to_string(),
         parts,
         reference_task_ids: Vec::new(),
         extensions: Vec::new(),
@@ -67,28 +36,9 @@ pub fn create_a2a_message(
     }
 }
 
-/// Converts radkit Artifact to A2A Artifact.
-///
-/// This is a utility function for converting radkit's internal `Artifact` type
-/// into the A2A protocol's `Artifact` type. It handles the conversion of content
-/// to parts and sets appropriate artifact metadata.
-///
-/// # Arguments
-///
-/// * `artifact` - The internal artifact to convert
-///
-/// # Examples
-///
-/// ```ignore
-/// use radkit::agent::Artifact;
-/// use radkit::models::utils;
-///
-/// let artifact = Artifact::from_json("result.json", &data)?;
-/// let a2a_artifact = utils::artifact_to_a2a(artifact);
-/// ```
-pub fn artifact_to_a2a(artifact: &Artifact) -> a2a_types::Artifact {
-    // Convert Content to A2A Parts
-    let parts: Vec<a2a_types::Part> = artifact
+/// Converts a radkit `Artifact` to `a2a_types::Artifact`.
+pub fn artifact_to_a2a(artifact: &Artifact) -> A2AArtifact {
+    let parts: Vec<A2APart> = artifact
         .content()
         .clone()
         .into_parts()
@@ -96,22 +46,18 @@ pub fn artifact_to_a2a(artifact: &Artifact) -> a2a_types::Artifact {
         .filter_map(ContentPart::into_a2a_part)
         .collect();
 
-    a2a_types::Artifact {
+    A2AArtifact {
         artifact_id: artifact.name().to_string(),
         parts,
-        name: Some(artifact.name().to_string()),
-        description: None,
+        name: artifact.name().to_string(),
+        description: String::new(),
         extensions: Vec::new(),
         metadata: None,
     }
 }
 
-/// Converts a Vec of radkit Artifacts to A2A Artifacts.
-///
-/// # Arguments
-///
-/// * `artifacts` - Vector of internal artifacts to convert
-pub fn artifacts_to_a2a(artifacts: &[Artifact]) -> Vec<a2a_types::Artifact> {
+/// Converts a slice of radkit `Artifact`s to `a2a_types::Artifact`s.
+pub fn artifacts_to_a2a(artifacts: &[Artifact]) -> Vec<A2AArtifact> {
     artifacts.iter().map(artifact_to_a2a).collect()
 }
 
@@ -126,9 +72,9 @@ mod tests {
         let message =
             create_a2a_message(Some("ctx-1"), Some("task-2"), Role::User, content.clone());
 
-        assert_eq!(message.context_id.as_deref(), Some("ctx-1"));
-        assert_eq!(message.task_id.as_deref(), Some("task-2"));
-        assert_eq!(message.role, a2a_types::MessageRole::User);
+        assert_eq!(message.context_id, "ctx-1");
+        assert_eq!(message.task_id, "task-2");
+        assert_eq!(message.role, A2ARole::User as i32);
         assert_eq!(message.parts.len(), content.parts().len());
     }
 
@@ -137,7 +83,7 @@ mod tests {
         let artifact = Artifact::from_text("notes.txt", "example");
         let converted = artifact_to_a2a(&artifact);
         assert_eq!(converted.artifact_id, "notes.txt");
-        assert_eq!(converted.name.as_deref(), Some("notes.txt"));
+        assert_eq!(converted.name, "notes.txt");
         assert_eq!(converted.parts.len(), artifact.content().parts().len());
 
         let multiple = artifacts_to_a2a(&[artifact.clone(), artifact]);

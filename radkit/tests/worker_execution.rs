@@ -7,7 +7,7 @@ use radkit::agent::{LlmFunction, LlmWorker};
 use radkit::macros::LLMOutput;
 use radkit::models::{Content, ContentPart, Event, LlmResponse, Thread, TokenUsage};
 use radkit::test_support::{structured_response, FakeLlm, RecordingTool};
-use radkit::tools::{BaseTool, FunctionTool, ToolCall, ToolContext, ToolResult};
+use radkit::tools::{FunctionTool, ToolCall, ToolContext, ToolResult};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

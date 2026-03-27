@@ -58,7 +58,10 @@ pub fn display_banner(address: &str, base_url: Option<&str>, agent: &AgentDefini
     println!("    Skills:      {skill_count}");
     println!("    Agent Card:  {normalized_base}/.well-known/agent-card.json");
     println!("    RPC:         {normalized_base}/rpc");
+    println!("    Send:        {normalized_base}/message:send");
     println!("    Streaming:   {normalized_base}/message:stream");
+    println!("    Tasks:       {normalized_base}/tasks/{{id}}");
+    println!("    Subscribe:   {normalized_base}/tasks/{{id}}:subscribe");
     println!();
 
     println!("Ready to accept connections!");

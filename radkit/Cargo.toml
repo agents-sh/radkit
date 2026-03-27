@@ -38,8 +38,9 @@ test-support = []
 macros = ["dep:radkit-macros", "dep:tryparse-derive"]
 
 [dependencies]
-a2a-types = { path = "../a2a-types", version = "0.1.3" }
+a2a-types = { path = "../a2a-types", version = "0.2.0" }
 a2a-client = { path = "../a2a-client", version = "0.1.2" }
+pbjson-types = "0.9.0"
 radkit-macros = { path = "../radkit-macros", version = "0.0.2", optional = true }
 tryparse-derive = { workspace = true, optional = true }
 async-trait = "0.1"

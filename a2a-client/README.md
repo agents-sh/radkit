@@ -1,371 +1,121 @@
 # A2A Client
 
-A Rust HTTP client for calling remote A2A (Agent-to-Agent) protocol compliant agents.
+Rust client for A2A v1.0 agents over HTTP+JSON and JSON-RPC.
 
 ## Version Compatibility
 
 | Crate Version | A2A Protocol Version | Notes |
 |---------------|---------------------|-------|
-| 0.1.0 | [0.3.0](https://github.com/a2aproject/A2A/releases/tag/v0.3.0) | Initial implementation with full protocol support |
-
-See the [A2A Protocol Releases](https://github.com/a2aproject/A2A/releases/) for the specification.
+| 0.1.x | 1.0 | v1 transport surface with generated protobuf-backed types |
 
 ## Installation
 
-Add this to your `Cargo.toml`:
-
 ```toml
 [dependencies]
-a2a-client = "0.1.0"
-a2a-types = "0.1.1"
+a2a-client = "0.1.2"
+a2a-types = "0.1.3"
 ```
 
 ## Quick Start
 
-### Basic Usage
-
 ```rust
 use a2a_client::A2AClient;
-use a2a_types::{Message, MessageRole, MessageSendParams, Part};
+use a2a_types::v1;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create client from agent card URL
     let client = A2AClient::from_card_url("https://agent.example.com")
         .await?
         .with_auth_token("your_api_key");
 
-    // Create a message
-    let message = Message {
-        kind: "message".to_string(),
+    let message = v1::Message {
         message_id: "msg_123".to_string(),
-        role: MessageRole::User,
-        parts: vec![Part::Text {
-            text: "Hello, agent!".to_string(),
+        context_id: String::new(),
+        task_id: String::new(),
+        role: v1::Role::User.into(),
+        parts: vec![v1::Part {
+            content: Some(v1::part::Content::Text("Hello, agent!".to_string())),
             metadata: None,
+            filename: String::new(),
+            media_type: "text/plain".to_string(),
         }],
-        context_id: None,
-        task_id: None,
-        reference_task_ids: vec![],
-        extensions: vec![],
         metadata: None,
+        extensions: Vec::new(),
+        reference_task_ids: Vec::new(),
     };
 
-    // Send message
-    let result = client
-        .send_message(MessageSendParams {
-            message,
+    let response = client
+        .send_message(v1::SendMessageRequest {
+            tenant: String::new(),
+            message: Some(message),
             configuration: None,
             metadata: None,
         })
         .await?;
 
-    println!("Response: {:?}", result);
+    println!("{response:?}");
     Ok(())
 }
 ```
 
-### Streaming Messages
+## Core Methods
+
+- `send_message(v1::SendMessageRequest) -> v1::SendMessageResponse`
+- `send_streaming_message(v1::SendMessageRequest) -> Stream<Item = Result<v1::StreamResponse, A2AError>>`
+- `get_task(v1::GetTaskRequest) -> v1::Task`
+- `list_tasks(v1::ListTasksRequest) -> v1::ListTasksResponse`
+- `cancel_task(v1::CancelTaskRequest) -> v1::Task`
+- `subscribe_to_task(v1::SubscribeToTaskRequest) -> Stream<Item = Result<v1::StreamResponse, A2AError>>`
+- `get_extended_agent_card(v1::GetExtendedAgentCardRequest) -> v1::AgentCard`
+
+## Streaming Example
 
 ```rust
-use futures_util::StreamExt;
 use a2a_client::A2AClient;
-use a2a_types::{Message, MessageSendParams, SendStreamingMessageResult};
+use a2a_types::v1;
+use futures_util::StreamExt;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = A2AClient::from_card_url("https://agent.example.com").await?;
 
-    let mut stream = client
-        .send_streaming_message(MessageSendParams { /* ... */ })
-        .await?;
+    let request = v1::SendMessageRequest {
+        tenant: String::new(),
+        message: Some(v1::Message {
+            message_id: "msg_123".to_string(),
+            context_id: String::new(),
+            task_id: String::new(),
+            role: v1::Role::User.into(),
+            parts: vec![v1::Part {
+                content: Some(v1::part::Content::Text("Hello, agent!".to_string())),
+                metadata: None,
+                filename: String::new(),
+                media_type: "text/plain".to_string(),
+            }],
+            metadata: None,
+            extensions: Vec::new(),
+            reference_task_ids: Vec::new(),
+        }),
+        configuration: None,
+        metadata: None,
+    };
 
-    while let Some(result) = stream.next().await {
-        match result? {
-            SendStreamingMessageResult::Task(task) => {
-                println!("Task: {:?}", task);
-            }
-            SendStreamingMessageResult::Message(msg) => {
-                println!("Message: {:?}", msg);
-            }
-            SendStreamingMessageResult::TaskStatusUpdate(update) => {
-                println!("Status: {:?}", update);
-            }
-            SendStreamingMessageResult::TaskArtifactUpdate(artifact) => {
-                println!("Artifact: {:?}", artifact);
-            }
-        }
+    let mut stream = client.send_streaming_message(request).await?;
+
+    while let Some(event) = stream.next().await {
+        println!("{:?}", event?);
     }
 
     Ok(())
 }
 ```
 
-### Custom HTTP Client (Advanced)
+## Notes
 
-For advanced use cases like custom timeouts, proxies, retry logic, or auth flows, provide your own `reqwest::Client`:
-
-```rust
-use a2a_client::A2AClient;
-use reqwest::{Client, header};
-use std::time::Duration;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Configure custom HTTP client
-    let mut headers = header::HeaderMap::new();
-    headers.insert(
-        header::AUTHORIZATION,
-        header::HeaderValue::from_str("Bearer your_token")?,
-    );
-    headers.insert(
-        "X-Custom-Header",
-        header::HeaderValue::from_static("custom-value"),
-    );
-
-    let http_client = Client::builder()
-        .timeout(Duration::from_secs(30))
-        .connect_timeout(Duration::from_secs(10))
-        .default_headers(headers)
-        .user_agent("my-app/1.0")
-        .build()?;
-
-    // Create A2A client with custom HTTP client
-    let client = A2AClient::from_card_url_with_client(
-        "https://agent.example.com",
-        http_client
-    ).await?;
-
-    // Use client as normal...
-    Ok(())
-}
-```
-
-## API Reference
-
-### Client Construction
-
-#### `A2AClient::from_card_url(base_url)`
-Create a client by fetching the agent card from `{base_url}/.well-known/agent-card.json`:
-
-```rust
-let client = A2AClient::from_card_url("https://agent.example.com").await?;
-```
-
-#### `A2AClient::from_card_url_with_client(base_url, http_client)`
-Create a client with a custom `reqwest::Client`:
-
-```rust
-let http_client = reqwest::Client::builder()
-    .timeout(Duration::from_secs(30))
-    .build()?;
-let client = A2AClient::from_card_url_with_client(
-    "https://agent.example.com",
-    http_client
-).await?;
-```
-
-#### `A2AClient::from_card(agent_card)`
-Create a client directly from a pre-fetched agent card:
-
-```rust
-let agent_card = /* ... fetch or construct AgentCard ... */;
-let client = A2AClient::from_card(agent_card)?;
-```
-
-#### `A2AClient::from_card_with_client(agent_card, http_client)`
-Create a client from an agent card with a custom HTTP client:
-
-```rust
-let http_client = reqwest::Client::builder()
-    .timeout(Duration::from_secs(30))
-    .build()?;
-let client = A2AClient::from_card_with_client(agent_card, http_client)?;
-```
-
-#### `with_auth_token(token)`
-Add bearer token authentication (builder pattern):
-
-```rust
-let client = A2AClient::from_card_url("https://agent.example.com")
-    .await?
-    .with_auth_token("your_api_key");
-```
-
-### Core Methods
-
-#### Message Sending
-
-```rust
-// Non-streaming
-let response = client.send_message(params).await?;
-
-// Streaming (returns a Stream)
-let stream = client.send_streaming_message(params).await?;
-```
-
-#### Task Management
-
-```rust
-// Get a specific task
-let task = client.get_task(TaskQueryParams {
-    id: "task_123".to_string(),
-    history_length: Some(10),
-    metadata: None,
-}).await?;
-
-// Cancel a task
-let cancelled_task = client.cancel_task(TaskIdParams {
-    id: "task_123".to_string(),
-    metadata: None,
-}).await?;
-
-// Resubscribe to a task's event stream (for reconnection)
-let stream = client.resubscribe_task(TaskIdParams {
-    id: "task_123".to_string(),
-    metadata: None,
-}).await?;
-
-// List tasks (commonly implemented, not official A2A spec)
-let tasks = client.list_tasks(Some("context_id".to_string())).await?;
-```
-
-#### Push Notification Configuration
-
-```rust
-use a2a_types::{TaskPushNotificationConfig, PushNotificationConfig};
-
-// Set push notification config
-let config = client.set_task_push_notification_config(TaskPushNotificationConfig {
-    task_id: "task_123".to_string(),
-    push_notification_config: PushNotificationConfig {
-        url: "https://my-app.com/webhook".to_string(),
-        token: Some("webhook_token".to_string()),
-        id: None,
-        authentication: None,
-    },
-}).await?;
-
-// Get push notification config
-let config = client.get_task_push_notification_config(TaskIdParams {
-    id: "task_123".to_string(),
-    metadata: None,
-}).await?;
-
-// List all push notification configs for a task
-let configs = client.list_task_push_notification_config(
-    ListTaskPushNotificationConfigParams {
-        id: "task_123".to_string(),
-        metadata: None,
-    }
-).await?;
-
-// Delete a push notification config
-client.delete_task_push_notification_config(
-    DeleteTaskPushNotificationConfigParams {
-        id: "task_123".to_string(),
-        push_notification_config_id: "config_id".to_string(),
-        metadata: None,
-    }
-).await?;
-```
-
-#### Extension Methods
-
-Call custom agent extension methods:
-
-```rust
-#[derive(serde::Serialize)]
-struct CustomParams {
-    query: String,
-    limit: usize,
-}
-
-#[derive(serde::Deserialize)]
-struct CustomResponse {
-    results: Vec<String>,
-}
-
-let response: CustomResponse = client
-    .call_extension_method("custom/search", CustomParams {
-        query: "hello".to_string(),
-        limit: 10,
-    })
-    .await?;
-```
-
-#### Agent Card Access
-
-```rust
-// Get cached agent card
-let card = client.agent_card();
-
-// Fetch a fresh agent card
-let card = client.fetch_agent_card("https://agent.example.com").await?;
-```
-
-## Error Handling
-
-The client uses `A2AError` for error reporting:
-
-```rust
-use a2a_client::{A2AError, A2AResult};
-
-match client.send_message(params).await {
-    Ok(response) => { /* handle success */ }
-    Err(A2AError::NetworkError { message }) => {
-        eprintln!("Network error: {}", message);
-    }
-    Err(A2AError::RemoteAgentError { message, code }) => {
-        eprintln!("Agent error {}: {}", code.unwrap_or(0), message);
-    }
-    Err(A2AError::SerializationError { message }) => {
-        eprintln!("Serialization error: {}", message);
-    }
-    Err(e) => {
-        eprintln!("Other error: {:?}", e);
-    }
-}
-```
-
-## Compatibility
-
-- **A2A Protocol Version**: 0.3.0
-- **Rust Edition**: 2024
-- **MSRV**: 1.70+
-
-## Testing
-
-```bash
-# Run unit tests
-cargo test
-
-# Run with output
-cargo test -- --nocapture
-
-# Run specific test
-cargo test test_client_requires_valid_card_url
-```
-
-## Contributing
-
-Contributions are welcome! Please ensure:
-
-1. Code follows Rust best practices
-2. All tests pass
-3. New features include tests
-4. Documentation is updated
+- The client prefers HTTP+JSON when the agent card advertises it, and falls back to JSON-RPC when needed.
+- `A2AClient::agent_card()` returns the cached `a2a_types::v1::AgentCard`.
+- `a2a_client::types` re-exports the generated `v1` module plus JSON-RPC envelope helpers.
 
 ## License
 
 MIT
-
-## Related Crates
-
-- [`a2a-types`](../a2a-types/) - A2A Protocol type definitions
-- [`radkit`](../) - Full AI Agent Development Kit
-
-## Resources
-
-- [A2A Protocol Specification](https://a2a.dev)
-- [Radkit Documentation](https://radkit.dev)

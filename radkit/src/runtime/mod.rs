@@ -130,7 +130,7 @@ pub trait AgentRuntime: MaybeSend + MaybeSync {
         memory::OwnedKnowledge::new(self.memory())
     }
 
-    /// Returns a pre-configured MemoryToolset for agent use.
+    /// Returns a pre-configured `MemoryToolset` for agent use.
     ///
     /// The toolset provides these tools:
     /// - `load_memory`: Search past conversations and user facts
@@ -224,13 +224,13 @@ impl Runtime {
     #[cfg(not(all(target_os = "wasi", target_env = "p1")))]
     pub async fn serve(mut self, address: impl AsRef<str>) -> AgentResult<()> {
         // Initialize tracing subscriber for logging
-        tracing_subscriber::registry()
+        let _ = tracing_subscriber::registry()
             .with(tracing_subscriber::EnvFilter::new(
                 std::env::var("RUST_LOG")
                     .unwrap_or_else(|_| "radkit=debug,tower_http=debug".into()),
             ))
             .with(tracing_subscriber::fmt::layer())
-            .init();
+            .try_init();
 
         let address = address.as_ref();
 
@@ -252,11 +252,14 @@ impl Runtime {
         // Build the Axum router with A2A API routes
         let api_routes = Router::new()
             .route("/.well-known/agent-card.json", get(web::agent_card_handler))
+            .route("/extendedAgentCard", get(web::extended_agent_card_handler))
             .route("/rpc", post(web::json_rpc_handler))
+            .route("/message:send", post(web::message_send_handler))
             .route("/message:stream", post(web::message_stream_handler))
+            .route("/tasks", get(web::list_tasks_handler))
             .route(
-                "/tasks/{task_id}/subscribe",
-                post(web::task_resubscribe_handler),
+                "/tasks/{*task_path}",
+                get(web::task_get_route_handler).post(web::task_post_route_handler),
             )
             .with_state(Arc::clone(&shared_runtime));
 
