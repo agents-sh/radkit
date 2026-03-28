@@ -292,12 +292,18 @@ impl GeminiLlm {
                     parts.push(json!({"text": text}));
                 }
                 ContentPart::ToolCall(tool_call) => {
-                    parts.push(json!({
-                        "functionCall": {
-                            "name": tool_call.name(),
-                            "args": tool_call.arguments()
-                        }
-                    }));
+                    // If Gemini gave us a raw part (with thought_signature etc.),
+                    // echo it back verbatim so the model's signature is preserved.
+                    if let Some(raw) = tool_call.provider_metadata() {
+                        parts.push(raw.clone());
+                    } else {
+                        parts.push(json!({
+                            "functionCall": {
+                                "name": tool_call.name(),
+                                "args": tool_call.arguments()
+                            }
+                        }));
+                    }
                 }
                 _ => {} // Gemini doesn't support other types in assistant messages
             }
@@ -338,12 +344,17 @@ impl GeminiLlm {
                     }));
                 }
                 ContentPart::ToolCall(tool_call) => {
-                    parts.push(json!({
-                        "functionCall": {
-                            "name": tool_call.name(),
-                            "args": tool_call.arguments()
-                        }
-                    }));
+                    // Echo raw part verbatim to preserve thought_signature if present.
+                    if let Some(raw) = tool_call.provider_metadata() {
+                        parts.push(raw.clone());
+                    } else {
+                        parts.push(json!({
+                            "functionCall": {
+                                "name": tool_call.name(),
+                                "args": tool_call.arguments()
+                            }
+                        }));
+                    }
                 }
                 _ => {}
             }
@@ -450,8 +461,14 @@ impl GeminiLlm {
 
                 let args = function_call.get("args").cloned().unwrap_or(Value::Null);
 
-                // Gemini doesn't provide call_id, so use name as id
-                content.push(ContentPart::ToolCall(ToolCall::new(name, name, args)));
+                // Gemini doesn't provide call_id, so use name as id.
+                // Preserve the entire raw part as provider_metadata so that
+                // thought_signature (and any other fields Gemini may add) are
+                // echoed back verbatim in subsequent turns.
+                let tool_call = ToolCall::new(name, name, args)
+                    .with_provider_metadata(part.clone());
+
+                content.push(ContentPart::ToolCall(tool_call));
             }
         }
 
