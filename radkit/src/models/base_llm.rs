@@ -180,3 +180,32 @@ pub trait BaseLlmExt: BaseLlm {
 /// This ensures every type implementing `BaseLlm` automatically gains the ergonomic
 /// `generate` method without any additional implementation work.
 impl<T: BaseLlm + ?Sized> BaseLlmExt for T {}
+
+/// Blanket [`BaseLlm`] implementation for `Arc<dyn BaseLlm>`.
+///
+/// Allows passing a shared LLM handle directly anywhere `impl BaseLlm` is expected —
+/// most importantly to [`LlmWorker::builder`] — without having to unwrap or clone the
+/// inner concrete type:
+///
+/// ```ignore
+/// // runtime.default_llm() returns Arc<dyn BaseLlm>
+/// let worker = LlmWorker::<MyOutput>::builder(runtime.default_llm()).build();
+/// ```
+#[cfg_attr(all(target_os = "wasi", target_env = "p1"), async_trait::async_trait(?Send))]
+#[cfg_attr(
+    not(all(target_os = "wasi", target_env = "p1")),
+    async_trait::async_trait
+)]
+impl BaseLlm for Arc<dyn BaseLlm> {
+    fn model_name(&self) -> &str {
+        self.as_ref().model_name()
+    }
+
+    async fn generate_content(
+        &self,
+        thread: Thread,
+        toolset: Option<Arc<dyn BaseToolset>>,
+    ) -> AgentResult<LlmResponse> {
+        self.as_ref().generate_content(thread, toolset).await
+    }
+}
