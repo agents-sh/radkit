@@ -88,11 +88,21 @@ impl FunctionDeclaration {
 ///
 /// When an LLM wants to call a tool, it generates a `ToolCall` with a unique ID,
 /// the name of the tool to invoke, and the arguments as a JSON value.
+///
+/// `provider_metadata` is an optional opaque blob used to round-trip
+/// provider-specific fields that must be echoed back in subsequent turns.
+/// For example, Gemini's thinking models attach a `thought_signature` to
+/// `functionCall` parts that must be preserved and re-sent verbatim.
+/// All other providers leave this field `None` and it has no effect.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     id: String,
     name: String,
     arguments: Value,
+    /// Provider-specific opaque metadata. Preserved and echoed back verbatim
+    /// when this tool call appears in a subsequent request to the same provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_metadata: Option<Value>,
 }
 
 impl ToolCall {
@@ -108,6 +118,7 @@ impl ToolCall {
             id: id.into(),
             name: name.into(),
             arguments,
+            provider_metadata: None,
         }
     }
 
@@ -127,6 +138,23 @@ impl ToolCall {
     #[must_use]
     pub const fn arguments(&self) -> &Value {
         &self.arguments
+    }
+
+    /// Returns the opaque provider metadata, if any.
+    ///
+    /// This is set by providers that need to round-trip extra fields (e.g.
+    /// Gemini's `thought_signature`). Callers outside providers should treat
+    /// this as opaque and not rely on its structure.
+    #[must_use]
+    pub fn provider_metadata(&self) -> Option<&Value> {
+        self.provider_metadata.as_ref()
+    }
+
+    /// Attaches opaque provider metadata to this tool call.
+    #[must_use]
+    pub fn with_provider_metadata(mut self, metadata: Value) -> Self {
+        self.provider_metadata = Some(metadata);
+        self
     }
 
     /// Consumes the call and returns its parts.
