@@ -228,8 +228,22 @@ impl Runtime {
         self.bind_address.as_deref()
     }
 
-    /// Exposes the task manager for integration tests.
-    #[cfg(any(test, feature = "test-support"))]
+    /// Returns the task manager used by this runtime.
+    ///
+    /// Useful when you need to hold an independent reference to the task
+    /// manager — for example to store it as Tauri managed state and query
+    /// conversation history (context IDs, session events) outside of the
+    /// request-handling path.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let runtime = Runtime::builder(agent, llm).build().into_shared();
+    /// let task_manager = runtime.task_manager();
+    ///
+    /// // Store independently (e.g. as Tauri state)
+    /// app.manage(task_manager);
+    /// ```
     #[must_use]
     pub fn task_manager(&self) -> Arc<dyn TaskManager> {
         self.task_manager.clone()
