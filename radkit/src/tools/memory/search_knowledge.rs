@@ -72,9 +72,8 @@ impl BaseTool for SearchKnowledgeTool {
         args: HashMap<String, Value>,
         _context: &ToolContext<'_>,
     ) -> ToolResult {
-        let query = match args.get("query").and_then(|v| v.as_str()) {
-            Some(q) => q,
-            None => return ToolResult::error("Missing required argument: query"),
+        let Some(query) = args.get("query").and_then(|v| v.as_str()) else {
+            return ToolResult::error("Missing required argument: query");
         };
 
         let limit = args

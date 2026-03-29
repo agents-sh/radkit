@@ -55,7 +55,7 @@ impl CompletedConversation {
                 },
                 metadata: msg
                     .timestamp
-                    .map(|ts| [("timestamp".to_string(), ts.into())].into_iter().collect())
+                    .map(|ts| std::iter::once(("timestamp".to_string(), ts.into())).collect())
                     .unwrap_or_default(),
             })
             .collect()

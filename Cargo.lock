@@ -1559,7 +1559,7 @@ checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 
 [[package]]
 name = "radkit"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "a2a-client",
  "a2a-types",
@@ -1601,7 +1601,7 @@ dependencies = [
 
 [[package]]
 name = "radkit-macros"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "async-trait",
  "proc-macro2",
@@ -2671,9 +2671,9 @@ dependencies = [
 
 [[package]]
 name = "tryparse"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddb34c8eec0d82207e9b114bdf6632f9e659aa1eb0be6882ccb17fcdb4897e35"
+checksum = "6ac7f5cb83e48ab9965216f2a009c13df23f584648919ad1d1e82295d5769aab"
 dependencies = [
  "once_cell",
  "regex",
@@ -2686,9 +2686,9 @@ dependencies = [
 
 [[package]]
 name = "tryparse-derive"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c15453b7f16a450c09ac0ab1d1ca190da44b64256ceb397548732cd36ac624fd"
+checksum = "5f080cec264be794a23dc64f45fc16a48fec072873ec11cc23e0c7dd95efde67"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",

@@ -146,7 +146,7 @@ impl ToolCall {
     /// Gemini's `thought_signature`). Callers outside providers should treat
     /// this as opaque and not rely on its structure.
     #[must_use]
-    pub fn provider_metadata(&self) -> Option<&Value> {
+    pub const fn provider_metadata(&self) -> Option<&Value> {
         self.provider_metadata.as_ref()
     }
 

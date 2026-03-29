@@ -465,8 +465,8 @@ impl GeminiLlm {
                 // Preserve the entire raw part as provider_metadata so that
                 // thought_signature (and any other fields Gemini may add) are
                 // echoed back verbatim in subsequent turns.
-                let tool_call = ToolCall::new(name, name, args)
-                    .with_provider_metadata(part.clone());
+                let tool_call =
+                    ToolCall::new(name, name, args).with_provider_metadata(part.clone());
 
                 content.push(ContentPart::ToolCall(tool_call));
             }

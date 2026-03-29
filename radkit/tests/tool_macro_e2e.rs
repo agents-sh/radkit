@@ -17,6 +17,7 @@ use serde_json::json;
 // ============================================================================
 
 #[derive(Debug, Deserialize, LLMOutput, Serialize, JsonSchema)]
+#[allow(dead_code)]
 struct CustomerInfo {
     customer_id: String,
     name: String,

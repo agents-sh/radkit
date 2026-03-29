@@ -162,6 +162,9 @@ impl AgentSkillDef {
     /// Converts this definition into a [`SkillRegistration`] by attaching an LLM.
     ///
     /// Called by `RuntimeBuilder::build()` which injects the shared LLM.
+    // Used from `runtime::RuntimeBuilder::build`; cross-cfg dead_code lint is a
+    // false positive here.
+    #[allow(dead_code)]
     pub(crate) fn into_registration(self, llm: Arc<dyn BaseLlm>) -> SkillRegistration {
         let handler = Arc::new(LlmSkillHandler::new(llm, &self.instructions));
         SkillRegistration {
@@ -261,10 +264,9 @@ fn to_display_name(id: &str) -> String {
     id.split('-')
         .map(|word| {
             let mut chars = word.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-            }
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().collect::<String>() + chars.as_str()
+            })
         })
         .collect::<Vec<_>>()
         .join(" ")

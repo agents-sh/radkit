@@ -62,9 +62,9 @@ pub struct RequestExecutor {
 /// A2A specification (§7.2 and §7.10 respectively).
 #[cfg_attr(all(target_os = "wasi", target_env = "p1"), allow(dead_code))]
 #[derive(Debug)]
-pub(crate) struct TaskStream {
-    pub(crate) initial_events: Vec<TaskEvent>,
-    pub(crate) receiver: Option<TaskEventReceiver>,
+pub struct TaskStream {
+    pub initial_events: Vec<TaskEvent>,
+    pub receiver: Option<TaskEventReceiver>,
 }
 
 /// Shared event writer to keep persistence + publish ordering consistent.
@@ -157,7 +157,7 @@ impl TaskIdentifiers {
 
 #[cfg_attr(all(target_os = "wasi", target_env = "p1"), allow(dead_code))]
 #[derive(Debug)]
-pub(crate) enum PreparedSendMessage {
+pub enum PreparedSendMessage {
     Task(TaskStream),
     Message(v1::Message),
 }
@@ -295,8 +295,14 @@ impl RequestExecutor {
         self.handle_send_message_internal(params).await
     }
 
+    /// Prepares and dispatches a streaming send-message request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AgentError`] if task creation, agent dispatch, or event-bus
+    /// subscription fails.
     #[cfg_attr(all(target_os = "wasi", target_env = "p1"), allow(dead_code))]
-    pub(crate) async fn handle_message_stream(
+    pub async fn handle_message_stream(
         &self,
         params: v1::SendMessageRequest,
     ) -> AgentResult<PreparedSendMessage> {

@@ -68,10 +68,10 @@ impl ContentSource {
             }
             Self::UserFact { category } => {
                 let uuid = uuid::Uuid::new_v4();
-                match category {
-                    Some(cat) => format!("fact:{cat}:{uuid}"),
-                    None => format!("fact:{uuid}"),
-                }
+                category.as_ref().map_or_else(
+                    || format!("fact:{uuid}"),
+                    |cat| format!("fact:{cat}:{uuid}"),
+                )
             }
             Self::Document {
                 document_id,

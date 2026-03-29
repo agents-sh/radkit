@@ -206,6 +206,9 @@ impl AgentBuilder {
     ///
     /// Used internally by `RuntimeBuilder::new`.
     #[cfg(feature = "agentskill")]
+    // Used from `runtime::RuntimeBuilder::new`; cross-cfg dead_code lint is a
+    // false positive here.
+    #[allow(dead_code)]
     pub(crate) fn into_parts(
         mut self,
     ) -> (

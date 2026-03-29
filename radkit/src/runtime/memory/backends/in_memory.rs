@@ -117,7 +117,6 @@ mod native {
             contents: Vec<MemoryContent>,
         ) -> AgentResult<Vec<String>> {
             let ns = Self::namespace(auth_ctx);
-            let ns_store = self.store.entry(ns).or_default();
             let mut ids = Vec::with_capacity(contents.len());
             for content in contents {
                 let id = content.source.generate_id();
@@ -127,7 +126,10 @@ mod native {
                     source: content.source,
                     metadata: content.metadata,
                 };
-                ns_store.insert(id.clone(), entry);
+                self.store
+                    .entry(ns.clone())
+                    .or_default()
+                    .insert(id.clone(), entry);
                 ids.push(id);
             }
             Ok(ids)
@@ -352,7 +354,9 @@ mod tests {
             .expect("search");
 
         assert_eq!(results.len(), 2);
-        assert!(results.iter().all(|r| r.score == 1.0));
+        assert!(results
+            .iter()
+            .all(|r| (r.score - 1.0_f32).abs() < f32::EPSILON));
     }
 
     #[tokio::test(flavor = "current_thread")]

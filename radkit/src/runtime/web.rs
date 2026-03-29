@@ -962,9 +962,8 @@ async fn fetch_task_transitions(
             let timestamp = status.timestamp.as_ref().map_or_else(
                 || chrono::Utc::now().to_rfc3339(),
                 |ts| {
-                    chrono::DateTime::from_timestamp(ts.seconds, ts.nanos as u32)
-                        .map(|dt| dt.to_rfc3339())
-                        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339())
+                    chrono::DateTime::from_timestamp(ts.seconds, ts.nanos.cast_unsigned())
+                        .map_or_else(|| chrono::Utc::now().to_rfc3339(), |dt| dt.to_rfc3339())
                 },
             );
 

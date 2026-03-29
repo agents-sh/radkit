@@ -24,12 +24,7 @@
 //! Then open http://localhost:8080 in your browser.
 //! Send messages like "Summarise this text: ..." or "Translate hello to Spanish".
 
-use radkit::{
-    agent::Agent,
-    include_skill,
-    models::providers::OpenRouterLlm,
-    runtime::Runtime,
-};
+use radkit::{agent::Agent, include_skill, models::providers::OpenRouterLlm, runtime::Runtime};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -51,7 +46,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
              Ask me to summarise any text, or to translate something into another language.",
         )
         // Compile-time embedded — SKILL.md baked into the binary, zero I/O at startup.
-        .with_skill_def(include_skill!("../examples/agentskill_agent/skills/text-summariser"))
+        .with_skill_def(include_skill!(
+            "../examples/agentskill_agent/skills/text-summariser"
+        ))
         // Runtime loaded — SKILL.md read from disk when the binary starts.
         // Path is relative to the current working directory at runtime.
         .with_skill_dir("examples/agentskill_agent/skills/translate")?;

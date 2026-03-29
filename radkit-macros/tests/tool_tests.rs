@@ -224,6 +224,7 @@ async fn test_wrong_parameter_type() {
 
 // Test 8: Complex nested struct
 #[derive(Deserialize, JsonSchema)]
+#[allow(dead_code)]
 struct Address {
     street: String,
     city: String,

@@ -45,6 +45,10 @@ impl OwnedHistory {
     /// * `auth` - Authentication context for namespacing
     /// * `query` - Natural language query describing what you're looking for
     /// * `limit` - Maximum number of results to return
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying memory service fails to search.
     pub async fn recall(
         &self,
         auth: &AuthContext,
@@ -66,6 +70,10 @@ impl OwnedHistory {
     /// * `auth` - Authentication context for namespacing
     /// * `text` - The fact to remember (be specific and include context)
     /// * `category` - Optional category for organization (e.g., "preferences", "facts")
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying memory service fails to store the fact.
     pub async fn save_fact(
         &self,
         auth: &AuthContext,
@@ -114,6 +122,10 @@ impl OwnedKnowledge {
     /// * `auth` - Authentication context for namespacing
     /// * `query` - Natural language query describing what you're looking for
     /// * `limit` - Maximum number of results to return
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying memory service fails to search.
     pub async fn search(
         &self,
         auth: &AuthContext,

@@ -523,6 +523,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     #[tokio::test(flavor = "current_thread")]
     async fn stores_tasks_events_and_context() {
         let manager = DefaultTaskManager::new(InMemoryTaskStore::new());

@@ -33,6 +33,10 @@ pub use task_manager::{
     DefaultTaskManager, ListTasksFilter, PaginatedResult, Task, TaskEvent, TaskManager, TaskStore,
 };
 
+// Re-export executor types for direct (non-HTTP) usage
+#[cfg(all(feature = "runtime", not(all(target_os = "wasi", target_env = "p1"))))]
+pub use core::executor::{ExecutorRuntime, PreparedSendMessage, RequestExecutor, TaskStream};
+
 // Re-export default implementations for convenience
 #[cfg(feature = "runtime")]
 pub use auth::StaticAuthService;
