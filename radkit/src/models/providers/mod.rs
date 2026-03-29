@@ -12,6 +12,20 @@
 //! - [`DeepSeekLlm`]: `DeepSeek` models via `DeepSeek` API (OpenAI-compatible)
 //! - [`OpenRouterLlm`]: `OpenRouter` marketplace models via OpenAI-compatible API
 //!
+//! # Computer Use (Gemini)
+//!
+//! [`GeminiLlm`] also exposes a browser-control agent via
+//! [`GeminiLlm::computer_use_worker`]. Implement [`ComputerUseHandler`] for your
+//! browser automation library, then call [`GeminiComputerUseWorker::run`] with a
+//! plain-text goal.
+//!
+//! Key types:
+//! - [`ComputerUseHandler`] — trait to implement for your browser environment
+//! - [`GeminiComputerUseWorker`] — the agentic loop
+//! - [`ComputerUseAction`] — a single UI action requested by the model
+//! - [`ActionOutcome`] — result you return after executing an action
+//! - [`SafetyDecision`] — present when the model requires user confirmation
+//!
 //! # Examples
 //!
 //! ```ignore
@@ -27,11 +41,28 @@
 //! // OpenRouter
 //! let llm = OpenRouterLlm::from_env("anthropic/claude-3.5-sonnet")?;
 //!
-//! // Gemini
-//! let llm = GeminiLlm::from_env("gemini-2.0-flash-exp")?;
-//!
+//! // Gemini – text generation
+//! let llm = GeminiLlm::from_env("gemini-2.5-flash")?;
 //! let thread = Thread::from_user("Hello!");
 //! let response = llm.generate_content(thread, None).await?;
+//!
+//! // Gemini – Computer Use
+//! use std::sync::Arc;
+//! use radkit::models::providers::{ComputerUseHandler, ComputerUseAction, ActionOutcome};
+//!
+//! struct MyBrowser;
+//!
+//! #[async_trait::async_trait]
+//! impl ComputerUseHandler for MyBrowser {
+//!     async fn screenshot(&self) -> Result<Vec<u8>, String> { todo!() }
+//!     async fn execute(&self, action: ComputerUseAction) -> ActionOutcome { todo!() }
+//! }
+//!
+//! let llm = Arc::new(GeminiLlm::from_env("gemini-2.5-computer-use-preview-10-2025")?);
+//! let answer = llm
+//!     .computer_use_worker(Arc::new(MyBrowser))
+//!     .run("Search Google for the Rust programming language")
+//!     .await?;
 //! ```
 
 mod anthropic_llm;
@@ -43,7 +74,10 @@ mod openrouter_llm;
 
 pub use anthropic_llm::AnthropicLlm;
 pub use deepseek_llm::DeepSeekLlm;
-pub use gemini_llm::GeminiLlm;
+pub use gemini_llm::{
+    ActionOutcome, ComputerUseAction, ComputerUseHandler, GeminiComputerUseWorker, GeminiLlm,
+    SafetyDecision,
+};
 pub use grok_llm::GrokLlm;
 pub use openai_llm::OpenAILlm;
 pub use openrouter_llm::OpenRouterLlm;

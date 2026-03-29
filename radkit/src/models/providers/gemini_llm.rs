@@ -3,9 +3,20 @@
 //! API Documentation: <https://ai.google.dev/api/generate-content>
 //! Model Names: <https://ai.google.dev/gemini-api/docs/models/gemini>
 //! Pricing: <https://ai.google.dev/pricing>
+//!
+//! # Computer Use
+//!
+//! This module also provides [`GeminiComputerUseWorker`], a browser-control agent
+//! built on Gemini's Computer Use capability. The worker drives an agentic loop:
+//! screenshot → model → actions → screenshot → … until the model returns a final
+//! text answer.
+//!
+//! See [`GeminiLlm::computer_use_worker`] and the `gemini_computer_use` example for
+//! usage.
 
 use std::sync::Arc;
 
+use base64::Engine as _;
 use serde_json::{json, Value};
 
 use crate::errors::{AgentError, AgentResult};
@@ -13,6 +24,497 @@ use crate::models::{BaseLlm, Content, ContentPart, LlmResponse, Role, Thread, To
 use crate::tools::{BaseToolset, ToolCall};
 
 const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/";
+
+// ============================================================================
+// Computer Use types
+// ============================================================================
+
+/// A single UI action requested by the Computer Use model.
+///
+/// The `name` and `args` fields mirror the `functionCall` payload returned by
+/// Gemini. `safety_decision` is populated when the model's internal safety
+/// system flags the action as requiring user confirmation before execution.
+#[derive(Debug, Clone)]
+pub struct ComputerUseAction {
+    /// The action name, e.g. `"click_at"`, `"type_text_at"`, `"navigate"`.
+    pub name: String,
+    /// Arguments for the action as a JSON object.
+    pub args: Value,
+    /// Present when Gemini's safety system requires explicit confirmation.
+    pub safety_decision: Option<SafetyDecision>,
+}
+
+/// Safety classification attached to a [`ComputerUseAction`] by Gemini's
+/// internal safety system.
+#[derive(Debug, Clone)]
+pub struct SafetyDecision {
+    /// The decision value. Currently `"require_confirmation"` is the only
+    /// non-trivial value; anything else (or absence) means the action is
+    /// allowed.
+    pub decision: String,
+    /// Human-readable explanation of why confirmation is required.
+    pub explanation: String,
+}
+
+impl SafetyDecision {
+    /// Returns `true` when the model requires explicit user confirmation before
+    /// the action may be executed.
+    #[must_use]
+    pub fn requires_confirmation(&self) -> bool {
+        self.decision == "require_confirmation"
+    }
+}
+
+/// Outcome reported back to the worker after executing a [`ComputerUseAction`].
+///
+/// Wrap the result of calling your Playwright / Puppeteer / headless-browser
+/// integration in one of these variants and return it from
+/// [`ComputerUseHandler::execute`].
+#[derive(Debug)]
+pub enum ActionOutcome {
+    /// The action completed successfully. `url` is the current page URL after
+    /// execution (used to populate the `FunctionResponse`).
+    Success { url: String },
+    /// The action failed. The worker will surface the error message to the model
+    /// as part of the `FunctionResponse` so it can attempt recovery.
+    Error { message: String },
+    /// The user (or your safety policy) declined to execute the action. The
+    /// worker will stop the loop immediately and return
+    /// [`AgentError::SecurityViolation`].
+    Denied { reason: String },
+}
+
+/// Trait that bridges the Computer Use worker to your actual browser environment.
+///
+/// Implement this for your chosen browser automation library (Playwright via
+/// [`playwright-rust`](https://crates.io/crates/playwright), `chromiumoxide`,
+/// `fantoccini`, a headless-chrome crate, etc.) or for a remote service such as
+/// [Browserbase](https://browserbase.com).
+///
+/// # Safety
+///
+/// The worker calls [`execute`](ComputerUseHandler::execute) for **every** action
+/// the model requests. If [`ComputerUseAction::safety_decision`] indicates
+/// [`SafetyDecision::requires_confirmation`], you **must** obtain explicit user
+/// consent before proceeding and return [`ActionOutcome::Denied`] if the user
+/// refuses. Per the [Gemini API Terms of Service](https://ai.google.dev/terms)
+/// you are not allowed to bypass these confirmation requests programmatically.
+///
+/// # Example
+///
+/// ```ignore
+/// use radkit::models::providers::{
+///     ActionOutcome, ComputerUseAction, ComputerUseHandler,
+/// };
+///
+/// struct PlaywrightHandler { /* page handle, screen dimensions, … */ }
+///
+/// #[async_trait::async_trait]
+/// impl ComputerUseHandler for PlaywrightHandler {
+///     async fn screenshot(&self) -> Result<Vec<u8>, String> {
+///         // return PNG bytes from the current browser page
+///         todo!()
+///     }
+///
+///     async fn execute(&self, action: ComputerUseAction) -> ActionOutcome {
+///         // check safety_decision, then dispatch on action.name
+///         match action.name.as_str() {
+///             "click_at" => { /* … */ }
+///             "type_text_at" => { /* … */ }
+///             _ => {}
+///         }
+///         ActionOutcome::Success { url: "https://example.com".into() }
+///     }
+/// }
+/// ```
+#[cfg_attr(all(target_os = "wasi", target_env = "p1"), async_trait::async_trait(?Send))]
+#[cfg_attr(
+    not(all(target_os = "wasi", target_env = "p1")),
+    async_trait::async_trait
+)]
+pub trait ComputerUseHandler: crate::compat::MaybeSend + crate::compat::MaybeSync {
+    /// Capture the current state of the browser / screen.
+    ///
+    /// Returns raw PNG bytes. The worker encodes them as base64 and includes
+    /// them in the `FunctionResponse` sent back to the model.
+    async fn screenshot(&self) -> Result<Vec<u8>, String>;
+
+    /// Execute a UI action and report the outcome.
+    ///
+    /// The worker calls this once per action in the model's response. When
+    /// the action has a `safety_decision` that [`requires_confirmation`](SafetyDecision::requires_confirmation),
+    /// you must ask the user before proceeding and return
+    /// [`ActionOutcome::Denied`] if they decline.
+    async fn execute(&self, action: ComputerUseAction) -> ActionOutcome;
+}
+
+// ============================================================================
+// Worker
+// ============================================================================
+
+/// An agentic loop that drives Gemini's Computer Use capability.
+///
+/// Created via [`GeminiLlm::computer_use_worker`]. Call [`run`](Self::run) with
+/// a plain-text goal; the worker will:
+///
+/// 1. Take an initial screenshot via the [`ComputerUseHandler`].
+/// 2. Send the goal + screenshot to the Gemini Computer Use model.
+/// 3. Receive a list of UI actions (`functionCall`s).
+/// 4. Execute each action through the handler.
+/// 5. Capture a fresh screenshot and feed it back as a `FunctionResponse`.
+/// 6. Repeat until the model returns a text-only response (task complete) or
+///    `max_turns` is reached.
+///
+/// # Models
+///
+/// The worker defaults to `gemini-2.5-computer-use-preview-10-2025`.
+/// Override with [`with_model`](Self::with_model).
+///
+/// # Example
+///
+/// ```ignore
+/// use std::sync::Arc;
+/// use radkit::models::providers::{GeminiLlm, ComputerUseHandler, ActionOutcome, ComputerUseAction};
+///
+/// struct MyBrowser;
+///
+/// #[async_trait::async_trait]
+/// impl ComputerUseHandler for MyBrowser {
+///     async fn screenshot(&self) -> Result<Vec<u8>, String> { todo!() }
+///     async fn execute(&self, action: ComputerUseAction) -> ActionOutcome { todo!() }
+/// }
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let llm = Arc::new(GeminiLlm::from_env("gemini-2.5-computer-use-preview-10-2025")?);
+///     let worker = llm.computer_use_worker(Arc::new(MyBrowser));
+///     let answer = worker.run("Search Google for the Rust programming language").await?;
+///     println!("{answer}");
+///     Ok(())
+/// }
+/// ```
+pub struct GeminiComputerUseWorker {
+    llm: Arc<GeminiLlm>,
+    handler: Arc<dyn ComputerUseHandler>,
+    model: String,
+    max_turns: usize,
+}
+
+impl GeminiComputerUseWorker {
+    /// Default Computer Use model.
+    pub const DEFAULT_MODEL: &'static str = "gemini-2.5-computer-use-preview-10-2025";
+
+    /// Override the model used for Computer Use requests.
+    ///
+    /// The model must support the `computer_use` tool. Currently only
+    /// `gemini-2.5-computer-use-preview-10-2025` and `gemini-3-flash-preview`
+    /// are supported by Google.
+    #[must_use]
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
+        self
+    }
+
+    /// Set the maximum number of model turns before the worker gives up.
+    ///
+    /// Defaults to `20`. Each turn = one model call + one round of action
+    /// execution.
+    #[must_use]
+    pub const fn with_max_turns(mut self, max_turns: usize) -> Self {
+        self.max_turns = max_turns;
+        self
+    }
+
+    /// Run the Computer Use agent loop for the given `goal`.
+    ///
+    /// Returns the final text answer produced by the model once it has
+    /// completed the task.
+    ///
+    /// # Errors
+    ///
+    /// - [`AgentError::SecurityViolation`] — an action was denied by safety policy or user refusal
+    /// - [`AgentError::LlmAuthentication`] / [`AgentError::LlmRateLimit`] — HTTP auth/rate errors
+    /// - [`AgentError::LlmProvider`] — any other Gemini API error or malformed response
+    /// - [`AgentError::Network`] — transport-level HTTP failure
+    /// - [`AgentError::ResourceExhausted`] — `max_turns` reached without a final text response
+    #[allow(clippy::too_many_lines)]
+    pub async fn run(&self, goal: &str) -> AgentResult<String> {
+        // --- initial screenshot ---
+        let initial_screenshot = self
+            .handler
+            .screenshot()
+            .await
+            .map_err(|e| AgentError::Internal {
+                component: "computer_use_handler".to_string(),
+                reason: format!("initial screenshot failed: {e}"),
+            })?;
+
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&initial_screenshot);
+
+        // Build the first user turn: goal text + screenshot
+        let mut contents: Vec<Value> = vec![json!({
+            "role": "user",
+            "parts": [
+                {"text": goal},
+                {
+                    "inline_data": {
+                        "mime_type": "image/png",
+                        "data": encoded
+                    }
+                }
+            ]
+        })];
+
+        for _turn in 0..self.max_turns {
+            // --- call the model ---
+            let response_body = self.call_api(&contents).await?;
+
+            // extract the model's content object
+            let model_content = response_body
+                .get("candidates")
+                .and_then(|c| c.get(0))
+                .and_then(|c| c.get("content"))
+                .cloned()
+                .ok_or_else(|| AgentError::LlmProvider {
+                    provider: "Gemini".to_string(),
+                    message: "missing candidates[0].content in Computer Use response".to_string(),
+                })?;
+
+            // append model turn to history
+            contents.push(model_content.clone());
+
+            // parse actions from parts
+            let actions = Self::parse_actions(&model_content)?;
+
+            // if no function calls → model is done, extract text answer
+            if actions.is_empty() {
+                let answer = model_content
+                    .get("parts")
+                    .and_then(|p| p.as_array())
+                    .map(|parts| {
+                        parts
+                            .iter()
+                            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                            .collect::<Vec<_>>()
+                            .join("")
+                    })
+                    .unwrap_or_default();
+                return Ok(answer);
+            }
+
+            // --- execute actions and collect function responses ---
+            let mut function_response_parts: Vec<Value> = Vec::new();
+
+            for action in actions {
+                // execute through the handler
+                let outcome = self.handler.execute(action.clone()).await;
+
+                match outcome {
+                    ActionOutcome::Denied { reason } => {
+                        return Err(AgentError::SecurityViolation {
+                            policy: "computer_use".to_string(),
+                            reason,
+                        });
+                    }
+                    ActionOutcome::Error { message } => {
+                        // Take a screenshot of the error state so the model can
+                        // see what happened and attempt recovery.
+                        let screenshot_bytes =
+                            self.handler.screenshot().await.unwrap_or_default();
+                        let screenshot_b64 = base64::engine::general_purpose::STANDARD
+                            .encode(&screenshot_bytes);
+
+                        function_response_parts.push(json!({
+                            "functionResponse": {
+                                "name": action.name,
+                                "response": {
+                                    "error": message
+                                }
+                            },
+                            "inline_data": {
+                                "mime_type": "image/png",
+                                "data": screenshot_b64
+                            }
+                        }));
+                    }
+                    ActionOutcome::Success { url } => {
+                        // Capture fresh screenshot after successful action
+                        let screenshot_bytes =
+                            self.handler.screenshot().await.map_err(|e| {
+                                AgentError::Internal {
+                                    component: "computer_use_handler".to_string(),
+                                    reason: format!("screenshot after action failed: {e}"),
+                                }
+                            })?;
+                        let screenshot_b64 = base64::engine::general_purpose::STANDARD
+                            .encode(&screenshot_bytes);
+
+                        // Build safety acknowledgement if it was required
+                        let mut response_payload = json!({ "url": url });
+                        if let Some(ref sd) = action.safety_decision {
+                            if sd.requires_confirmation() {
+                                response_payload["safety_acknowledgement"] =
+                                    json!("true");
+                            }
+                        }
+
+                        function_response_parts.push(json!({
+                            "functionResponse": {
+                                "name": action.name,
+                                "response": response_payload,
+                                "parts": [{
+                                    "inline_data": {
+                                        "mime_type": "image/png",
+                                        "data": screenshot_b64
+                                    }
+                                }]
+                            }
+                        }));
+                    }
+                }
+            }
+
+            // append user turn with all function responses
+            contents.push(json!({
+                "role": "user",
+                "parts": function_response_parts
+            }));
+        }
+
+        Err(AgentError::ResourceExhausted {
+            resource: "computer_use_turns".to_string(),
+            reason: format!(
+                "reached max_turns ({}) without a final text response",
+                self.max_turns
+            ),
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Private helpers
+    // -----------------------------------------------------------------------
+
+    /// POST to the Gemini generateContent endpoint with the Computer Use tool.
+    async fn call_api(&self, contents: &[Value]) -> AgentResult<Value> {
+        let url = format!(
+            "{}models/{}:generateContent",
+            self.llm.base_url, self.model
+        );
+
+        let payload = json!({
+            "contents": contents,
+            "tools": [{
+                "computer_use": {
+                    "environment": "ENVIRONMENT_BROWSER"
+                }
+            }]
+        });
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&url)
+            .header("x-goog-api-key", &self.llm.api_key)
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unknown error".to_string());
+
+            return Err(match status.as_u16() {
+                401 | 403 => AgentError::LlmAuthentication {
+                    provider: "Gemini".to_string(),
+                },
+                429 => AgentError::LlmRateLimit {
+                    provider: "Gemini".to_string(),
+                },
+                _ => AgentError::LlmProvider {
+                    provider: "Gemini".to_string(),
+                    message: format!("HTTP {status}: {error_body}"),
+                },
+            });
+        }
+
+        let body: Value = response.json().await?;
+
+        if let Some(error) = body.get("error") {
+            return Err(AgentError::LlmProvider {
+                provider: "Gemini".to_string(),
+                message: format!("API error: {error}"),
+            });
+        }
+
+        Ok(body)
+    }
+
+    /// Extract [`ComputerUseAction`]s from a model content object.
+    fn parse_actions(model_content: &Value) -> AgentResult<Vec<ComputerUseAction>> {
+        let Some(parts) = model_content
+            .get("parts")
+            .and_then(|p| p.as_array())
+        else {
+            return Ok(vec![]);
+        };
+
+        let mut actions = Vec::new();
+
+        for part in parts {
+            let Some(fc) = part.get("functionCall") else {
+                continue;
+            };
+
+            let name = fc
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| AgentError::LlmProvider {
+                    provider: "Gemini".to_string(),
+                    message: "missing 'name' in Computer Use functionCall".to_string(),
+                })?
+                .to_string();
+
+            let mut args = fc.get("args").cloned().unwrap_or_else(|| Value::Object(serde_json::Map::default()));
+
+            // Extract and remove safety_decision from args before forwarding
+            let safety_decision = args
+                .as_object_mut()
+                .and_then(|map| map.remove("safety_decision"))
+                .and_then(|sd| {
+                    let decision = sd
+                        .get("decision")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let explanation = sd
+                        .get("explanation")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if decision.is_empty() {
+                        None
+                    } else {
+                        Some(SafetyDecision { decision, explanation })
+                    }
+                });
+
+            actions.push(ComputerUseAction {
+                name,
+                args,
+                safety_decision,
+            });
+        }
+
+        Ok(actions)
+    }
+}
+
+// ============================================================================
+// GeminiLlm
+// ============================================================================
 
 /// Google Gemini LLM implementation.
 ///
@@ -27,26 +529,63 @@ const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/
 /// # Model Selection
 ///
 /// Common model names:
+/// - `gemini-2.5-flash` - Gemini 2.5 Flash
+/// - `gemini-2.5-pro` - Gemini 2.5 Pro
 /// - `gemini-2.0-flash-exp` - Gemini 2.0 Flash Experimental
 /// - `gemini-1.5-pro` - Gemini 1.5 Pro
 /// - `gemini-1.5-flash` - Gemini 1.5 Flash
 ///
+/// # Computer Use
+///
+/// Call [`computer_use_worker`](GeminiLlm::computer_use_worker) to build a
+/// browser-control agent powered by Gemini's Computer Use capability.
+/// The worker handles the full agentic loop: screenshot → model → actions →
+/// screenshot → … → final answer.
+///
+/// Supported Computer Use models:
+/// - `gemini-2.5-computer-use-preview-10-2025`
+/// - `gemini-3-flash-preview`
+///
 /// # Examples
+///
+/// ## Text generation
 ///
 /// ```ignore
 /// use radkit::models::providers::GeminiLlm;
 /// use radkit::models::{BaseLlm, Thread};
 ///
 /// // From environment variable
-/// let llm = GeminiLlm::from_env("gemini-2.0-flash-exp")?;
+/// let llm = GeminiLlm::from_env("gemini-2.5-flash")?;
 ///
 /// // With explicit API key
-/// let llm = GeminiLlm::new("gemini-2.0-flash-exp", "api-key");
+/// let llm = GeminiLlm::new("gemini-2.5-flash", "api-key");
 ///
 /// // Generate content
 /// let thread = Thread::from_user("Explain quantum computing");
 /// let response = llm.generate_content(thread, None).await?;
 /// println!("{}", response.content().first_text().unwrap_or("No response"));
+/// ```
+///
+/// ## Computer Use
+///
+/// ```ignore
+/// use std::sync::Arc;
+/// use radkit::models::providers::{
+///     GeminiLlm, ComputerUseHandler, ComputerUseAction, ActionOutcome,
+/// };
+///
+/// struct MyBrowser;
+///
+/// #[async_trait::async_trait]
+/// impl ComputerUseHandler for MyBrowser {
+///     async fn screenshot(&self) -> Result<Vec<u8>, String> { todo!() }
+///     async fn execute(&self, action: ComputerUseAction) -> ActionOutcome { todo!() }
+/// }
+///
+/// let llm = Arc::new(GeminiLlm::from_env("gemini-2.5-computer-use-preview-10-2025")?);
+/// let worker = llm.computer_use_worker(Arc::new(MyBrowser));
+/// let answer = worker.run("Search for the Rust programming language on Google").await?;
+/// println!("{answer}");
 /// ```
 pub struct GeminiLlm {
     model_name: String,
@@ -64,13 +603,13 @@ impl GeminiLlm {
     ///
     /// # Arguments
     ///
-    /// * `model_name` - The model to use (e.g., "gemini-2.0-flash-exp")
+    /// * `model_name` - The model to use (e.g., "gemini-2.5-flash")
     /// * `api_key` - Google AI API key
     ///
     /// # Examples
     ///
     /// ```ignore
-    /// let llm = GeminiLlm::new("gemini-2.0-flash-exp", "api-key");
+    /// let llm = GeminiLlm::new("gemini-2.5-flash", "api-key");
     /// ```
     pub fn new(model_name: impl Into<String>, api_key: impl Into<String>) -> Self {
         Self {
@@ -88,7 +627,7 @@ impl GeminiLlm {
     ///
     /// # Arguments
     ///
-    /// * `model_name` - The model to use (e.g., "gemini-2.0-flash-exp")
+    /// * `model_name` - The model to use (e.g., "gemini-2.5-flash")
     ///
     /// # Errors
     ///
@@ -97,7 +636,7 @@ impl GeminiLlm {
     /// # Examples
     ///
     /// ```ignore
-    /// let llm = GeminiLlm::from_env("gemini-2.0-flash-exp")?;
+    /// let llm = GeminiLlm::from_env("gemini-2.5-flash")?;
     /// ```
     pub fn from_env(model_name: impl Into<String>) -> AgentResult<Self> {
         let api_key =
@@ -137,6 +676,55 @@ impl GeminiLlm {
         self.temperature = Some(temperature);
         self
     }
+
+    /// Creates a [`GeminiComputerUseWorker`] that drives Gemini's Computer Use
+    /// capability using `self` for API authentication.
+    ///
+    /// The `llm` must be wrapped in an [`Arc`] so the worker can share it
+    /// without cloning the API key.
+    ///
+    /// The worker defaults to the
+    /// `gemini-2.5-computer-use-preview-10-2025` model. Override it with
+    /// [`GeminiComputerUseWorker::with_model`].
+    ///
+    /// # Arguments
+    ///
+    /// * `handler` - Your implementation of [`ComputerUseHandler`] that
+    ///   controls the target browser environment.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use std::sync::Arc;
+    /// use radkit::models::providers::{GeminiLlm, ComputerUseHandler, ComputerUseAction, ActionOutcome};
+    ///
+    /// struct MyBrowser;
+    ///
+    /// #[async_trait::async_trait]
+    /// impl ComputerUseHandler for MyBrowser {
+    ///     async fn screenshot(&self) -> Result<Vec<u8>, String> { todo!() }
+    ///     async fn execute(&self, action: ComputerUseAction) -> ActionOutcome { todo!() }
+    /// }
+    ///
+    /// let llm = Arc::new(GeminiLlm::from_env("gemini-2.5-computer-use-preview-10-2025")?);
+    /// let worker = llm.computer_use_worker(Arc::new(MyBrowser));
+    /// let answer = worker.run("Find the cheapest laptop on Amazon under $500").await?;
+    /// ```
+    pub fn computer_use_worker(
+        self: Arc<Self>,
+        handler: Arc<dyn ComputerUseHandler>,
+    ) -> GeminiComputerUseWorker {
+        GeminiComputerUseWorker {
+            model: GeminiComputerUseWorker::DEFAULT_MODEL.to_string(),
+            llm: self,
+            handler,
+            max_turns: 20,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Private helpers (generate_content path)
+    // -----------------------------------------------------------------------
 
     /// Converts a Thread into Gemini API request format.
     async fn build_request_payload(
@@ -595,6 +1183,10 @@ impl BaseLlm for GeminiLlm {
     }
 }
 
+// ============================================================================
+// Tests
+// ============================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -651,7 +1243,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn build_request_payload_includes_system_instruction() {
-        let llm = GeminiLlm::new("gemini-2.0-flash-exp", "api-key")
+        let llm = GeminiLlm::new("gemini-2.5-flash", "api-key")
             .with_temperature(0.8)
             .with_max_tokens(1024);
 
@@ -692,7 +1284,7 @@ mod tests {
 
     #[test]
     fn parse_response_extracts_text_and_tool_calls() {
-        let _llm = GeminiLlm::new("gemini-2.0-flash-exp", "api-key");
+        let _llm = GeminiLlm::new("gemini-2.5-flash", "api-key");
         let body = json!({
             "candidates": [
                 {
@@ -727,7 +1319,7 @@ mod tests {
 
     #[test]
     fn parse_response_missing_candidates_errors() {
-        let _llm = GeminiLlm::new("gemini-2.0-flash-exp", "api-key");
+        let _llm = GeminiLlm::new("gemini-2.5-flash", "api-key");
         let body = json!({});
         let err = GeminiLlm::parse_response(&body).expect_err("expected error");
         match err {
@@ -758,5 +1350,121 @@ mod tests {
             Some(value) => std::env::set_var(GeminiLlm::API_KEY_ENV, value),
             None => std::env::remove_var(GeminiLlm::API_KEY_ENV),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Computer Use tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_actions_extracts_function_calls() {
+        let model_content = json!({
+            "role": "model",
+            "parts": [
+                {"text": "I will click the search bar."},
+                {
+                    "functionCall": {
+                        "name": "click_at",
+                        "args": {"x": 500, "y": 300}
+                    }
+                }
+            ]
+        });
+
+        let actions = GeminiComputerUseWorker::parse_actions(&model_content).expect("actions");
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].name, "click_at");
+        assert_eq!(actions[0].args["x"], json!(500));
+        assert!(actions[0].safety_decision.is_none());
+    }
+
+    #[test]
+    fn parse_actions_extracts_safety_decision() {
+        let model_content = json!({
+            "role": "model",
+            "parts": [{
+                "functionCall": {
+                    "name": "click_at",
+                    "args": {
+                        "x": 60,
+                        "y": 100,
+                        "safety_decision": {
+                            "decision": "require_confirmation",
+                            "explanation": "This clicks an I'm-not-a-robot checkbox."
+                        }
+                    }
+                }
+            }]
+        });
+
+        let actions = GeminiComputerUseWorker::parse_actions(&model_content).expect("actions");
+        assert_eq!(actions.len(), 1);
+        // safety_decision must be removed from args
+        assert!(actions[0].args.get("safety_decision").is_none());
+        let sd = actions[0].safety_decision.as_ref().expect("safety_decision");
+        assert!(sd.requires_confirmation());
+        assert!(!sd.explanation.is_empty());
+    }
+
+    #[test]
+    fn parse_actions_empty_when_no_function_calls() {
+        let model_content = json!({
+            "role": "model",
+            "parts": [{"text": "The task is complete."}]
+        });
+
+        let actions = GeminiComputerUseWorker::parse_actions(&model_content).expect("actions");
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn safety_decision_requires_confirmation() {
+        let sd = SafetyDecision {
+            decision: "require_confirmation".to_string(),
+            explanation: "Clicking accept terms".to_string(),
+        };
+        assert!(sd.requires_confirmation());
+
+        let sd_allowed = SafetyDecision {
+            decision: "regular".to_string(),
+            explanation: String::new(),
+        };
+        assert!(!sd_allowed.requires_confirmation());
+    }
+
+    // Shared no-op handler used by the two worker-builder tests below.
+    struct NoopHandler;
+
+    #[cfg_attr(all(target_os = "wasi", target_env = "p1"), async_trait::async_trait(?Send))]
+    #[cfg_attr(not(all(target_os = "wasi", target_env = "p1")), async_trait::async_trait)]
+    impl ComputerUseHandler for NoopHandler {
+        async fn screenshot(&self) -> Result<Vec<u8>, String> {
+            Ok(vec![])
+        }
+        async fn execute(&self, _: ComputerUseAction) -> ActionOutcome {
+            ActionOutcome::Success {
+                url: String::new(),
+            }
+        }
+    }
+
+    #[test]
+    fn computer_use_worker_default_model() {
+        let llm = Arc::new(GeminiLlm::new("gemini-2.5-flash", "key"));
+        let worker = llm.computer_use_worker(Arc::new(NoopHandler));
+        assert_eq!(worker.model, GeminiComputerUseWorker::DEFAULT_MODEL);
+        assert_eq!(worker.max_turns, 20);
+    }
+
+    #[test]
+    fn computer_use_worker_builder_overrides() {
+        let llm = Arc::new(GeminiLlm::new("gemini-2.5-flash", "key"));
+        let worker = llm
+            .computer_use_worker(Arc::new(NoopHandler))
+            .with_model("gemini-3-flash-preview")
+            .with_max_turns(5);
+
+        assert_eq!(worker.model, "gemini-3-flash-preview");
+        assert_eq!(worker.max_turns, 5);
     }
 }

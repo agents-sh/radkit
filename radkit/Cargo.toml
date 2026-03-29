@@ -105,3 +105,7 @@ path = "../examples/hr_agent/agent.rs"
 name = "agentskill_agent"
 path = "../examples/agentskill_agent/agent.rs"
 required-features = ["agentskill", "dev-ui"]
+
+[[example]]
+name = "gemini_computer_use"
+path = "../examples/gemini_computer_use.rs"
