@@ -428,6 +428,7 @@ impl State {
 /// ```
 // Runtime implementation with full functionality
 #[cfg(feature = "runtime")]
+#[derive(Clone)]
 pub struct ProgressSender {
     auth: Option<AuthContext>,
     task_manager: Option<Arc<dyn TaskManager>>,
@@ -542,6 +543,7 @@ impl ProgressSender {
 
 // Non-runtime stub implementation (no-op for testing and non-server use cases)
 #[cfg(not(feature = "runtime"))]
+#[derive(Clone)]
 pub struct ProgressSender {
     _private: (),
 }

@@ -4,8 +4,8 @@
 //! The tool handles routing, context tracking, and multi-turn conversations with remote agents.
 
 use crate::tools::{BaseTool, FunctionDeclaration, ToolContext, ToolResult};
+use a2a_client::types::v1::{self as v1, AgentCard, Artifact, Message, Part, TaskState};
 use a2a_client::A2AClient;
-use a2a_types::{self as v1, AgentCard, Artifact, Message, Part, TaskState};
 use chrono::Utc;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -452,7 +452,7 @@ impl A2AAgentTool {
                         Part {
                             content: Some(v1::part::Content::Data(data)),
                             ..
-                        } => serde_json::to_string(data).ok(),
+                        } => Some(format!("{data:?}")),
                         Part {
                             content: Some(v1::part::Content::Url(url)),
                             ..
