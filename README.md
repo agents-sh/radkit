@@ -1,3 +1,21 @@
+<div align="center">
+
+> **⚠️ DEPRECATED — No longer maintained.**  
+> This project has been superseded by the official A2A Rust SDK at [github.com/a2aproject/a2a-rs](https://github.com/a2aproject/a2a-rs).
+
+---
+---
+
+> **PS:** We are building a voice client for the multi-agentic future — initial concept at [agents.sh](https://agents.sh).  
+> Join the [Discord](https://discord.gg/sz33nw5ZdR) (still early days).
+
+---
+---
+
+</div>
+
+<br>
+
 <div style="text-align: center;">
   <div class="centered-logo-text-group">
     <img src="docs/src/assets/logo.svg" alt="RadKit Logo" width="100">
