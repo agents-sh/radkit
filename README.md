@@ -7,7 +7,6 @@
 ---
 
 > **PS:** We are building a voice client for the multi-agentic future — initial concept at [agents.sh](https://agents.sh).  
-> Join the [Discord](https://discord.gg/sz33nw5ZdR) (still early days).
 
 ---
 ---
